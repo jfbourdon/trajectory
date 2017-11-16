@@ -92,32 +92,16 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
   return(XYZtp.SPDF) #SpatialPointsDataFrame en sortie avec XYZ + gpstime + PointSourceID
 }
 
+Rcpp::sourceCpp("C_fn_interval.cpp")
+
+
 fn_index2 = function(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
 {
-  intervalles.debut <- (bin+step)*(1:nb.ellapsed-1)
-  intervalles.fin   <- intervalles.debut+bin
-  indexes.debut     <- integer(nb.ellapsed)
-  indexes.fin       <- integer(nb.ellapsed)
+  indexes = C_fn_interval(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
+  indexes.debut = indexes$debut
+  indexes.fin = indexes$fin
   
   output = list()
-  
-  n <- length(somme.cumulative)
-  j <- 1
-  k <- 1
-  for (i in 1:n)
-  {
-    if (j <= nb.ellapsed & somme.cumulative[i] > intervalles.debut[j])
-    {
-      indexes.debut[j] <- i
-      j = j+1
-    }
-    
-    if (k <= nb.ellapsed & somme.cumulative[i] > intervalles.fin[k])
-    {
-      indexes.fin[k] <- i
-      k = k + 1
-    }
-  }
   
   for (i in 1:nb.ellapsed)
   {
