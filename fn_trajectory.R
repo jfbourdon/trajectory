@@ -64,7 +64,7 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
   # pour chaque liste des index, trouve les retours multiples appartenant ? la m?me impulsion, 
   # trace un prolongement dans le ciel et trouve ultimement les coordonn?es XYZ du point de 
   # rencontre de toutes ces lignes par la technique des moindres carr?s
-  ls.XYZ<-lapply(1:nb.ellapsed, fn_XYZ.l2m.complet, pts.LiDAR.sourceID, ls.index, nbpairs) 
+  ls.XYZ<-lapply(ls.index, fn_XYZ.l2m.complet, pts.LiDAR.sourceID, nbpairs) 
   
   mat.XYZt<-do.call("rbind", ls.XYZ)
   
@@ -92,9 +92,6 @@ fn_index2 = function(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
     
     if (npulse > nbpairs)
       output[[length(output) + 1]] <- c(indexes.debut[i], indexes.fin[i])
-    else
-      output[length(output) + 1] <- list(NULL)
-      
   }
   
   return(output)
@@ -117,46 +114,38 @@ fn_index <- function(ii, bin, step, nbpairs, somme.cumulative)
     return(NULL)
 }
 
-fn_XYZ.l2m.complet<-function(kk, pts.LiDAR.sourceID, ls.index, nbpairs) 
+fn_XYZ.l2m.complet<-function(index, pts.LiDAR.sourceID, nbpairs) 
 {
-  ### l2m = least sqares mean
-  if (!is.null(ls.index[[kk]])) 
+  index.debut <- index[1]
+  index.fin   <- index[2]
+  
+  # sous-ensemble comprenant uniquement les points de la bo?te
+  pts.LiDAR.subset<-pts.LiDAR.sourceID[index.debut:index.fin]
+  
+  #calcule la diff?rence entre chaque paire d'?l?ments cons?cutifs
+  diff.pts.LiDAR<-diff(pts.LiDAR.subset[["gpstime"]])
+  
+  # trouve la position du d?but de chaque impulsion
+  pos.impulsion<-c(1, which(diff.pts.LiDAR != 0) + 1) 
+  
+  diff.impulsion<-diff(pos.impulsion)
+  index.diff.multiple<-which(diff.impulsion >= 2)
+  
+  if (length(index.diff.multiple) >= nbpairs) 
   {
-    index.debut<-ls.index[[kk]][1] #? d?finir selon les bin
-    index.fin<-ls.index[[kk]][2] #? d?finir selon les bin. Ne pas soustraire 1 ici, le faire directement dans l'extraction de diff.pts.LiDAR[a:b-1]
+    index.multiple.debut<-pos.impulsion[index.diff.multiple]
+    index.multiple.fin<-index.multiple.debut+(diff.impulsion[index.diff.multiple]-1)
     
-    # sous-ensemble comprenant uniquement les points de la bo?te
-    pts.LiDAR.subset<-pts.LiDAR.sourceID[index.debut:index.fin]
+    dt.debut <- pts.LiDAR.subset[index.multiple.debut, c("X","Y","Z")]
+    dt.fin <- pts.LiDAR.subset[index.multiple.fin, c("X","Y","Z")]
     
-    #calcule la diff?rence entre chaque paire d'?l?ments cons?cutifs
-    diff.pts.LiDAR<-diff(pts.LiDAR.subset[["gpstime"]])
+    PA   <- as.matrix(dt.fin)   #XYZ des points de d?part
+    PB   <- as.matrix(dt.debut) #XYZ des points d'arriv?e
+    time <- pts.LiDAR.subset[[1, "gpstime"]]
     
-    # trouve la position du d?but de chaque impulsion
-    pos.impulsion<-c(1, which(diff.pts.LiDAR!=0) + 1) 
+    positions = fn_XYZ.l2m(PA, PB)
     
-    diff.impulsion<-diff(pos.impulsion)
-    index.diff.multiple<-which(diff.impulsion >= 2)
-    
-    if (length(index.diff.multiple) >= nbpairs) 
-    {
-      index.multiple.debut<-pos.impulsion[index.diff.multiple]
-      index.multiple.fin<-index.multiple.debut+(diff.impulsion[index.diff.multiple]-1)
-      
-      dt.debut <- pts.LiDAR.subset[index.multiple.debut, c("X","Y","Z")]
-      dt.fin <- pts.LiDAR.subset[index.multiple.fin, c("X","Y","Z")]
-      
-      # temporairement, uniquement le gpstime de la premi?re impulsion est copi? partout, 
-      # mais cela pourrait ?tre perfectionn? un peu. Le d?fi est de trouver le temps qui 
-      # sera le plus repr?sentatif de l'endroit o? se trouvera l'avion. Un temps m?dian de 
-      # tous les points pourrait ?tre utilis?. Je doute toutefois que cela ait un gros impact 
-      # peu importe l'utilisation qui sera faite ensuite de la ligne de vol ?tant donn? qu'elle 
-      # sera d?j? approximative en XYZ
-      mat.segment.XYZt<-as.matrix(cbind(dt.fin, dt.debut, pts.LiDAR.subset[index.multiple.debut, "gpstime"])) 
-      
-      PA<-mat.segment.XYZt[,1:3] #XYZ des points de d?part
-      PB<-mat.segment.XYZt[,4:6] #XYZ des points d'arriv?e
-      return(cbind(fn_XYZ.l2m(PA, PB), mat.segment.XYZt[1,7], nrow(mat.segment.XYZt)))
-    }
+    return(cbind(positions, time, nrow(PA)))
   }
 }
 
