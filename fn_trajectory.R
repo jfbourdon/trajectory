@@ -23,10 +23,7 @@ fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, n
 
   data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
   
-  ls.SPDF.XYZtp <- lapply(PtSourceID, fn_SPDF.XYZtp, pts.LiDAR, bin, step, nbpairs)
-  
-  ls.SPDF.XYZtp[sapply(ls.SPDF.XYZtp, is.null)] <- NULL
-  SPDF.XYZtp <- do.call(rbind, ls.SPDF.XYZtp)
+  SPDF.XYZtp <- fn_SPDF.XYZtp(pts.LiDAR, bin, step, nbpairs)
   
   return(SPDF.XYZtp)
 }
@@ -34,17 +31,13 @@ fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, n
 Rcpp::sourceCpp("C_fn_interval.cpp")
 
 ### ?valuation de la trajectoire de vol pour un PointSource sp?cifique
-fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs) 
+fn_SPDF.XYZtp<-function(pts.LiDAR, bin, step, nbpairs) 
 {
-  # Get point with a specific PointSourceID
-  pts.LiDAR.sourceID <- pts.LiDAR #[PointSourceID == id] 
-  
-  # nombre total de retours pour la ligne de vol
-  fin <- nrow(pts.LiDAR.sourceID)
+  fin <- nrow(pts.LiDAR)
   
   # Time ellapsed from first point to last point
-  tf   <- pts.LiDAR.sourceID[[fin,"gpstime"]] 
-  ti   <- pts.LiDAR.sourceID[[1,"gpstime"]]
+  tf   <- pts.LiDAR[[fin,"gpstime"]] 
+  ti   <- pts.LiDAR[[1,"gpstime"]]
   ellapsed <- (tf - ti)/(bin+step)
   
   # Number of bins
@@ -55,7 +48,7 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
   
   # g?n?ne une somme cumulative des diff?rences de temps afin d'obtenir exactement l'index 
   # d'une impulsion X seconde apr?s une autre
-  somme.cumulative <- fast_cumsum_diff(pts.LiDAR.sourceID[["gpstime"]])
+  somme.cumulative <- fast_cumsum_diff(pts.LiDAR[["gpstime"]])
   
   # g?n?re une liste des index pour chaque bin
   #ls.index <- lapply(1:nb.ellapsed, fn_index, bin, step, nbpairs, somme.cumulative) 
@@ -64,7 +57,7 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
   # pour chaque liste des index, trouve les retours multiples appartenant ? la m?me impulsion, 
   # trace un prolongement dans le ciel et trouve ultimement les coordonn?es XYZ du point de 
   # rencontre de toutes ces lignes par la technique des moindres carr?s
-  ls.XYZ<-lapply(ls.index, fn_XYZ.l2m.complet, pts.LiDAR.sourceID, nbpairs) 
+  ls.XYZ<-lapply(ls.index, fn_XYZ.l2m.complet, pts.LiDAR, nbpairs) 
   
   mat.XYZt<-do.call("rbind", ls.XYZ)
   
