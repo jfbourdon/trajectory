@@ -1,17 +1,3 @@
-
-# ========================================================================================
-# AM?LIORATIONS ? APPORTER ###
-# Ajouter une option pour ignorer les paires dont les points sont distants de moins de x.x m?tre
-# Utiliser des moindres carr?s biais?s en donnant plus de poids aux paires dont la longueur de leur
-#    segement est plus grande. Plus les deux points sont ?loign?s, moins l'impr?cision de la position
-#    des points eux m?mes aura un impact sur l'angle de l'angle de la projection dans le ciel.
-# Ajouter une option pour XX % des paires dont la distance au point milieu sont les plus ?loign?es
-#    - n?cessite d'ajouter une option d?terminer le nombre de passes
-#    - recalculer ? chaque passe un nouveau point milieu
-# Gestion de la memoire
-#    - Eviter toutes les copies de points
-# ========================================================================================
-
 #' Reconstitue une trajectoire de vol estimée à partir des retours multiples
 #'
 #' Description longue ici
@@ -33,7 +19,7 @@ fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, n
     stop("No 'PointSourceID' field found", call. = FALSE)
   
   if (is.null(PtSourceID))
-    PtSourceID <- unique(pts.LiDAR$PointSourceID)
+    PtSourceID <- fast_unique(pts.LiDAR$PointSourceID)
 
   data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
   
@@ -45,23 +31,23 @@ fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, n
   return(SPDF.XYZtp)
 }
 
+Rcpp::sourceCpp("C_fn_interval.cpp")
 
 ### ?valuation de la trajectoire de vol pour un PointSource sp?cifique
 fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs) 
 {
-  # data.table des points LiDAR d'un PointSourceID sp?cifique
-  # Ici une copie entiere du nuage de point
-  pts.LiDAR.sourceID <- pts.LiDAR[PointSourceID == id] 
+  # Get point with a specific PointSourceID
+  pts.LiDAR.sourceID <- pts.LiDAR #[PointSourceID == id] 
   
   # nombre total de retours pour la ligne de vol
   fin <- nrow(pts.LiDAR.sourceID)
   
-  #calcul du nombre de secondes entre les premier et dernier point de la ligne de vol
+  # Time ellapsed from first point to last point
   tf   <- pts.LiDAR.sourceID[[fin,"gpstime"]] 
   ti   <- pts.LiDAR.sourceID[[1,"gpstime"]]
   ellapsed <- (tf - ti)/(bin+step)
   
-  #calcule le nombre de bo?tes qu'il sera possible d'?valuer selon les param?tres
+  # Number of bins
   if (ellapsed - floor(ellapsed) > bin) 
     nb.ellapsed <- floor(ellapsed)+1
   else 
@@ -69,7 +55,7 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
   
   # g?n?ne une somme cumulative des diff?rences de temps afin d'obtenir exactement l'index 
   # d'une impulsion X seconde apr?s une autre
-  somme.cumulative <- cumsum(diff(pts.LiDAR.sourceID[["gpstime"]])) 
+  somme.cumulative <- fast_cumsum_diff(pts.LiDAR.sourceID[["gpstime"]])
   
   # g?n?re une liste des index pour chaque bin
   #ls.index <- lapply(1:nb.ellapsed, fn_index, bin, step, nbpairs, somme.cumulative) 
@@ -86,14 +72,11 @@ fn_SPDF.XYZtp<-function(id, pts.LiDAR, bin, step, nbpairs)
     stop("The algorithm failed computing aircraft position")
   
   df.XYZtp <- data.frame(cbind(mat.XYZt, id))
-  names(df.XYZtp) <- c("X", "Y", "Z", "meanDist", "sdDist", "gpstime", "NbPaires", "PointSourceID")
+  names(df.XYZtp) <- c("X", "Y", "Z", "gpstime", "NbPaires", "PointSourceID")
   XYZtp.SPDF <- sp::SpatialPointsDataFrame(coords=df.XYZtp[,c("X","Y")], data = df.XYZtp)
   
   return(XYZtp.SPDF) #SpatialPointsDataFrame en sortie avec XYZ + gpstime + PointSourceID
 }
-
-Rcpp::sourceCpp("C_fn_interval.cpp")
-
 
 fn_index2 = function(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
 {
@@ -134,8 +117,8 @@ fn_index <- function(ii, bin, step, nbpairs, somme.cumulative)
     return(NULL)
 }
 
-
-fn_XYZ.l2m.complet<-function(kk, pts.LiDAR.sourceID, ls.index, nbpairs) {
+fn_XYZ.l2m.complet<-function(kk, pts.LiDAR.sourceID, ls.index, nbpairs) 
+{
   ### l2m = least sqares mean
   if (!is.null(ls.index[[kk]])) 
   {
@@ -177,7 +160,6 @@ fn_XYZ.l2m.complet<-function(kk, pts.LiDAR.sourceID, ls.index, nbpairs) {
   }
 }
 
-
 fn_XYZ.l2m <- function(PA, PB) 
 {
   ### Calcul du point d'intersection XYZ par la technique des moindres carr?s.
@@ -209,56 +191,56 @@ fn_XYZ.l2m <- function(PA, PB)
   C <- matrix(c(CX,CY,CZ))
   P_intersect <- Conj(t(solve(S,C))) #Best intersection point of the N lines, in least squares sense
   
-  
-  # ========================================================== 
-  # A RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
-  # distances perpendiculaires entre le point et les lignes
-  
-  dist3d <- function(ii, a, b, c) 
-  {
-    v1 <- b[ii,] - c[ii,]
-    v2 <- a[1,] - b[ii,]      
-    v3 <- cross3d_prod(v1,v2)
-    area <- sqrt(sum(v3*v3))/2
-    d <- 2*area/sqrt(sum(v1*v1))
-    return(d)
-  }
-  
-  cross3d_prod <- function(v1, v2)
-  {
-    v3 <- vector()
-    v3[1] <- v1[2]*v2[3]-v1[3]*v2[2]
-    v3[2] <- v1[3]*v2[1]-v1[1]*v2[3]
-    v3[3] <- v1[1]*v2[2]-v1[2]*v2[1]
-    return(v3)
-  }
-  
-  N <- dim(PA)[1]
-  
-  #Distances from intersection point to the input lines
-  distances<-sapply(1:N, dist3d, P_intersect, PA, PB) 
-  
-  # func_ECDF<-ecdf(distances)
-  # 
-  # eval.max<-max(distances)
-  # eval.min<-min(distances)
-  # limite<-0.8
-  # 
-  # while (abs(mean(c(eval.max, eval.min))-eval)>0.001) {
-  #   eval<-mean(c(eval.max, eval.min))
-  #   if(func_ECDF(eval)<limite) {
-  #     eval.min<-eval
-  #   } else {
-  #     eval.max<-eval
-  #   }
-  # }
-  # 
-  # plot(func_ECDF, main="Distribution cumulative des distances au point", ylab="Proportion", xlab="Distance (m)")
-  # abline(h=limite, lty=2, col="red")
-  # abline(v=eval, lwd=2, col="red")
-  # text(1, paste0(sprintf("%.1f", eval)," m @ ", limite), pos=1, col="red", font=2)
-  ## FIN de ? RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
-  # ======================================================================================
-  
-  return(cbind(P_intersect, mean(distances), sd(distances)))
+  return(P_intersect)
+  #return(cbind(P_intersect, mean(distances), sd(distances)))
 }
+
+# # ========================================================== 
+# # A RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
+# # distances perpendiculaires entre le point et les lignes
+# 
+# dist3d <- function(ii, a, b, c) 
+# {
+#   v1 <- b[ii,] - c[ii,]
+#   v2sp: <- a[1,] - b[ii,]      
+#   v3 <- cross3d_prod(v1,v2)
+#   area <- sqrt(sum(v3*v3))/2
+#   d <- 2*area/sqrt(sum(v1*v1))
+#   return(d)
+# }
+# 
+# cross3d_prod <- function(v1, v2)
+# {
+#   v3 <- vector()
+#   v3[1] <- v1[2]*v2[3]-v1[3]*v2[2]
+#   v3[2] <- v1[3]*v2[1]-v1[1]*v2[3]
+#   v3[3] <- v1[1]*v2[2]-v1[2]*v2[1]
+#   return(v3)
+# }
+# 
+# N <- dim(PA)[1]
+# 
+# #Distances from intersection point to the input lines
+# distances<-sapply(1:N, dist3d, P_intersect, PA, PB) 
+# 
+# # func_ECDF<-ecdf(distances)
+# # 
+# # eval.max<-max(distances)
+# # eval.min<-min(distances)
+# # limite<-0.8
+# # 
+# # while (abs(mean(c(eval.max, eval.min))-eval)>0.001) {
+# #   eval<-mean(c(eval.max, eval.min))
+# #   if(func_ECDF(eval)<limite) {
+# #     eval.min<-eval
+# #   } else {
+# #     eval.max<-eval
+# #   }
+# # }
+# # 
+# # plot(func_ECDF, main="Distribution cumulative des distances au point", ylab="Proportion", xlab="Distance (m)")
+# # abline(h=limite, lty=2, col="red")
+# # abline(v=eval, lwd=2, col="red")
+# # text(1, paste0(sprintf("%.1f", eval)," m @ ", limite), pos=1, col="red", font=2)
+# ## FIN de ? RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
+# # ======================================================================================

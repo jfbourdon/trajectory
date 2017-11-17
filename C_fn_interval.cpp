@@ -34,3 +34,24 @@ List C_fn_interval(int nbellapsed, double bin, int step, int nbpairs, NumericVec
   
   return List::create(Rcpp::Named("debut") = indexes_debut, Named("fin") = indexes_fin);
 }
+
+// [[Rcpp::export]]
+NumericVector fast_cumsum_diff(NumericVector x)
+{
+  int n = x.length();
+  NumericVector y(n-1);
+  y[0] = x[1]-x[0];
+  
+  for(int i = 1 ; i < n-1 ; i++)
+  {
+    y[i] = y[i-1] + x[i+1] - x[i];
+  }
+  
+  return y;
+}
+
+// [[Rcpp::export]]
+IntegerVector fast_unique(IntegerVector x)
+{
+  return unique(x);
+}

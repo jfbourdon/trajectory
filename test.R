@@ -15,5 +15,9 @@ sp::plot(output)
 
 report = profvis::profvis({fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20)})
 
-# v0.1 : time ~ 18 s | memory used ~ 3.4 GB
-# v0.2 : time ~  6 s | memory used ~ 1.3 GB
+# v0.1 : time ~  18 s | memory used ~ 3.4 GB
+# v0.2 : time ~   6 s | memory used ~ 1.3 GB
+# v0.3 : time ~ 1.5 s | memory used ~ 1.1 GB
+# v0.4 : time ~   1 s | memory used ~ 1.0 GB
+# v0.5 : time ~ 0.5 s | memory used ~ 150 MB
+# v0.6 : time ~ 0.4 s | memory used ~ 150 MB
