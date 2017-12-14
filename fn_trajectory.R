@@ -1,17 +1,22 @@
-#' Reconstitue une trajectoire de vol estimée à partir des retours multiples
+#' Reconstruct the trajectory of the LiDAR sensor using multiple returns
 #'
 #' Description longue ici
 #' 
 #' @details
-#' Explication de l'algo ici
-#' @param pts.LiDAR: data.table containing the data
-#' @param PtSourceID: vecteur des numéros de lignes de vol à traiter (si 0, l'algo le fera 
-#' pour toutes les lignes de vols trouv?es)
-#' @param bin: intervalle maximal en seconde dans lequel les retours doivent tous se situ?s 
-#' pour qu'une position XYZt unique leur soit attribu?e
-#' @param saut: intervalle en seconde auquel une nouvelle position doit ?tre trouv?e
-#' @param nbpairs: nombre minimal de paires de retours multiples devant ?tre trouv? pour 
-#' qu'une position soit estim?e
+#' When returns from a single pulse are detected, the sensor compute their positions as being in
+#' the center of the footprint and thus being all aligned. Because of that beheaviour, a line
+#' drawn between and beyond those returns must cross the sensor. Thus, several consecutive pulses
+#' emitted in a tight interval (e.g. 0.001 millisecond) can be used to approximate an intersection
+#' point in the sky that would correspond to the sensor position given that the sensor carrier hasn't
+#' move much during this interval. A least squares means method using pseudoinverse gives a "close
+#' enough" approximation be minimising the squared sum of the distances between the intersection
+#' point and all the lines.
+#' @param pts.LiDAR: data.table containing the LiDAR data as read with rlas::readlasdata
+#' @param PtSourceID: vector containing flight line numbers to use (if NULL, all flight lines 
+#' found will be use)
+#' @param bin: interval (in second) in which a unqiue sensor position will be find
+#' @param step: interval (in second) at which a new sensor position will be find
+#' @param nbpairs: minimal number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
 fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20) 
 {
@@ -23,158 +28,135 @@ fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, n
 
   data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
   
-  SPDF.XYZtp <- fn_SPDF.XYZtp(pts.LiDAR, bin, step, nbpairs)
+  df_sensor_positions <- sensor_positions(pts.LiDAR, bin, step, nbpairs)
   
-  return(SPDF.XYZtp)
+  return(df_sensor_positions)
 }
 
 Rcpp::sourceCpp("C_fn_interval.cpp")
 
-### ?valuation de la trajectoire de vol pour un PointSource sp?cifique
-fn_SPDF.XYZtp<-function(pts.LiDAR, bin, step, nbpairs) 
+### Evaluate sensor positions for a specific flight line
+sensor_positions <- function(pts.LiDAR, bin, step, nbpairs) 
 {
-  fin <- nrow(pts.LiDAR)
-  
-  # Time ellapsed from first point to last point
-  tf   <- pts.LiDAR[[fin,"gpstime"]] 
-  ti   <- pts.LiDAR[[1,"gpstime"]]
-  ellapsed <- (tf - ti)/(bin+step)
+  # Time elapsed from first point to last point
+  last <- nrow(pts.LiDAR)
+  tf <- pts.LiDAR[[last,"gpstime"]] 
+  ti <- pts.LiDAR[[1,"gpstime"]]
+  elapsed <- (tf - ti)/(bin + step)
   
   # Number of bins
-  if (ellapsed - floor(ellapsed) > bin) 
-    nb.ellapsed <- floor(ellapsed)+1
+  if (elapsed - floor(elapsed) > bin) 
+    nb_bins <- floor(elapsed) + 1
   else 
-    nb.ellapsed <- floor(ellapsed)
+    nb_bins <- floor(elapsed)
   
-  # g?n?ne une somme cumulative des diff?rences de temps afin d'obtenir exactement l'index 
-  # d'une impulsion X seconde apr?s une autre
-  somme.cumulative <- fast_cumsum_diff(pts.LiDAR[["gpstime"]])
+  # Generate a list of the ends (line numbers) of each bin
+  cumulative_sum <- fast_cumsum_diff(pts.LiDAR[["gpstime"]])
+  ls_bins_ends <- bins_ends(nb_bins, bin, step, nbpairs, cumulative_sum)
   
-  # g?n?re une liste des index pour chaque bin
-  #ls.index <- lapply(1:nb.ellapsed, fn_index, bin, step, nbpairs, somme.cumulative) 
-  ls.index <- fn_index2(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
+  # Generate a list of XYZ coordinates corresponding to the estimated sensor position
+  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, pts.LiDAR, nbpairs) 
+  mat_sensor_positions <- do.call("rbind", ls_sensor_positions)
   
-  # pour chaque liste des index, trouve les retours multiples appartenant ? la m?me impulsion, 
-  # trace un prolongement dans le ciel et trouve ultimement les coordonn?es XYZ du point de 
-  # rencontre de toutes ces lignes par la technique des moindres carr?s
-  ls.XYZ<-lapply(ls.index, fn_XYZ.l2m.complet, pts.LiDAR, nbpairs) 
+  if(is.null(mat_sensor_positions)) 
+    stop("The algorithm failed computing sensor position")
   
-  mat.XYZt<-do.call("rbind", ls.XYZ)
+  # Generate a data.frame containing sensor position (XYZ), gpstime and nbpairs
+  df_sensor_positions <- data.frame(mat_sensor_positions)
+  names(df_sensor_positions) <- c("X", "Y", "Z", "gpstime", "NbPairs")
   
-  if(is.null(mat.XYZt)) 
-    stop("The algorithm failed computing aircraft position")
-  
-  df.XYZtp <- data.frame(cbind(mat.XYZt, id))
-  names(df.XYZtp) <- c("X", "Y", "Z", "gpstime", "NbPaires", "PointSourceID")
-  XYZtp.SPDF <- sp::SpatialPointsDataFrame(coords=df.XYZtp[,c("X","Y")], data = df.XYZtp)
-  
-  return(XYZtp.SPDF) #SpatialPointsDataFrame en sortie avec XYZ + gpstime + PointSourceID
+  return(df_sensor_positions)
 }
 
-fn_index2 = function(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
+### Find indexes (line numbers) of start/end of each bin
+bins_ends <- function(nb_bins, bin, step, nbpairs, cumulative_sum)
 {
-  indexes = C_fn_interval(nb.ellapsed, bin, step, nbpairs, somme.cumulative)
-  indexes.debut = indexes$debut
-  indexes.fin = indexes$fin
+  indexes <- C_fn_interval(nb_bins, bin, step, nbpairs, cumulative_sum)
+  indexes_start <- indexes$debut
+  indexes_end <- indexes$fin
   
-  output = list()
+  output <- list()
   
-  for (i in 1:nb.ellapsed)
+  for (i in 1:nb_bins)
   {
-    npulse = length(unique(somme.cumulative[indexes.debut[i]:indexes.fin[i]]))+1
+    npulse <- length(unique(cumulative_sum[indexes_start[i]:indexes_end[i]])) + 1
     
-    if (npulse > nbpairs)
-      output[[length(output) + 1]] <- c(indexes.debut[i], indexes.fin[i])
+    if (npulse > nbpairs) 
+      output[[length(output) + 1]] <- c(indexes_start[i], indexes_end[i])
   }
   
   return(output)
 }
 
-### Trouve les index (num?ro de ligne) du d?but et de la fin de chaque bin
-fn_index <- function(ii, bin, step, nbpairs, somme.cumulative) 
+### Estimate for a specific bin the sensor position
+XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
 {
-  intervalle.debut <- (bin+step)*(ii-1)
-  index.debut <- match(TRUE, somme.cumulative > intervalle.debut)
-  intervalle.fin <- intervalle.debut+bin
-  index.fin <- match(TRUE, somme.cumulative>intervalle.fin)
+  # Subset containing only returns within a specific bin
+  pts.LiDAR_subset <- pts.LiDAR.sourceID[ends_indexes[1]:ends_indexes[2]]
   
-  nb.pulse <- length(unique(somme.cumulative[index.debut:index.fin]))+1
+  # Lagged difference of gpstime of returns within a specific bin
+  diff_gpstime <- diff(pts.LiDAR_subset[["gpstime"]])
   
-  # imposition d'un seuil minimal de nombre de retours pour poursuivre l'?valuation
-  if (nb.pulse > nbpairs) 
-    return(c(index.debut, index.fin))
-  else
-    return(NULL)
-}
-
-fn_XYZ.l2m.complet<-function(index, pts.LiDAR.sourceID, nbpairs) 
-{
-  index.debut <- index[1]
-  index.fin   <- index[2]
+  # Generate a vector containing the start position (line) of each pulse
+  indexes_start_pulses <- c(1, which(diff_gpstime != 0) + 1)
   
-  # sous-ensemble comprenant uniquement les points de la bo?te
-  pts.LiDAR.subset<-pts.LiDAR.sourceID[index.debut:index.fin]
+  # Generate a vector containing the start position (line) of each pulse with two or more returns
+  #  Can't use the NumberOfReturns and ReturnNumber fields in case the dataset has been cleaned
+  #  and that some returns are missing
+  diff_nb_returns <- diff(indexes_start_pulses)
+  indexes_start_pulses_multiple <- which(diff_nb_returns >= 2)
   
-  #calcule la diff?rence entre chaque paire d'?l?ments cons?cutifs
-  diff.pts.LiDAR<-diff(pts.LiDAR.subset[["gpstime"]])
-  
-  # trouve la position du d?but de chaque impulsion
-  pos.impulsion<-c(1, which(diff.pts.LiDAR != 0) + 1) 
-  
-  diff.impulsion<-diff(pos.impulsion)
-  index.diff.multiple<-which(diff.impulsion >= 2)
-  
-  if (length(index.diff.multiple) >= nbpairs) 
+  if (length(indexes_start_pulses_multiple) >= nbpairs) 
   {
-    index.multiple.debut<-pos.impulsion[index.diff.multiple]
-    index.multiple.fin<-index.multiple.debut+(diff.impulsion[index.diff.multiple]-1)
+    indexes_multiple_start <- indexes_start_pulses[indexes_start_pulses_multiple]
+    indexes_multiple_end <- index_multiple_start + (diff_nb_returns[indexes_start_pulses_multiple] - 1)
     
-    dt.debut <- pts.LiDAR.subset[index.multiple.debut, c("X","Y","Z")]
-    dt.fin <- pts.LiDAR.subset[index.multiple.fin, c("X","Y","Z")]
+    # data.table containing coordinates XYZ of each start/end of each multiple returns pulse
+    dt_start <- pts.LiDAR_subset[indexes_multiple_start, c("X","Y","Z")]
+    dt_end <- pts.LiDAR_subset[indexes_multiple_end, c("X","Y","Z")]
     
-    PA   <- as.matrix(dt.fin)   #XYZ des points de d?part
-    PB   <- as.matrix(dt.debut) #XYZ des points d'arriv?e
-    time <- pts.LiDAR.subset[[1, "gpstime"]]
+    XYZ_start <- as.matrix(dt_end)
+    XYZ_end   <- as.matrix(dt_start)
+    time <- pts.LiDAR_subset[[1, "gpstime"]]
     
-    positions = fn_XYZ.l2m(PA, PB)
-    
-    return(cbind(positions, time, nrow(PA)))
+    # Matrix containing sensor position (XYZ), gpstime and number of pulses used
+    mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end)
+    return(cbind(mat_XYZ_positions, time, nrow(XYZ_start)))
   }
 }
 
-fn_XYZ.l2m <- function(PA, PB) 
+### Calculate intersection point from several returns pairs using least squares means
+XYZ_intersect <- function(XYZ_start, XYZ_end)
 {
-  ### Calcul du point d'intersection XYZ par la technique des moindres carr?s.
-  ### PA: matrice n x 3 contenant les coordonn?es XYZ de chaque point de d?part
-  ### PB: matrice n x 3 contenant les coordonn?es XYZ de chaque point de d'arriv?e
-  ### Code traduit de MATLAB en R
-  ### http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
+  # XYZ_start: matrix n x 3 containing XYZ coordinates for each starting returns
+  # XYZ_end: matrix n x 3 containing XYZ coordinates for each ending returns
+  # Translated from MATLAB (Anders Eikenes, 2012)
+  # http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
   
-  Si <- PB-PA #N lines described as vectors, direction vector
-  ni <- Si/(matrix(sqrt(.rowSums(Si^2, dim(Si)[1], dim(Si)[2]))) %*% matrix(1, nrow=1, ncol=3)) #Normalize vectors
+  direction_vectors <- XYZ_end - XYZ_start
+  normalized_vectors <- direction_vectors/(matrix(sqrt(.rowSums(direction_vectors^2, dim(direction_vectors)[1], dim(direction_vectors)[2]))) %*% matrix(1, ncol = 3))
   
-  nx <- ni[,1, drop=FALSE]
-  ny <- ni[,2, drop=FALSE]
-  nz <- ni[,3, drop=FALSE]
+  Nx <- normalized_vectors[,1, drop = FALSE]
+  Ny <- normalized_vectors[,2, drop = FALSE]
+  Nz <- normalized_vectors[,3, drop = FALSE]
   
-  SXX <- sum(nx^2-1)
-  SYY <- sum(ny^2-1)
-  SZZ <- sum(nz^2-1)
-  SXY <- sum(nx*ny)
-  SXZ <- sum(nx*nz)
-  SYZ <- sum(ny*nz)
+  Sxx <- sum(Nx^2 - 1)
+  Syy <- sum(Ny^2 - 1)
+  Szz <- sum(Nz^2 - 1)
+  Sxy <- sum(Nx*Ny)
+  Sxz <- sum(Nx*Nz)
+  Syz <- sum(Ny*Nz)
   
-  S <- matrix(c(SXX,SXY,SXZ,SXY,SYY,SYZ,SXZ,SYZ,SZZ), nrow = 3, byrow = TRUE)
+  S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
   
-  CX <- sum(PA[,1, drop=FALSE]*(nx^2-1) + PA[,2, drop=FALSE]*(nx*ny) + PA[,3, drop=FALSE]*(nx*nz))
-  CY <- sum(PA[,1, drop=FALSE]*(nx*ny) + PA[,2, drop=FALSE]*(ny^2-1) + PA[,3, drop=FALSE]*(ny*nz))
-  CZ <- sum(PA[,1, drop=FALSE]*(nx*nz) + PA[,2, drop=FALSE]*(ny*nz)  + PA[,3, drop=FALSE]*(nz^2-1))
+  Cx <- sum(XYZ_start[,1, drop = FALSE]*(Nx^2 - 1) + XYZ_start[,2, drop = FALSE]*(Nx*Ny) + XYZ_start[,3, drop = FALSE]*(Nx*Nz))
+  Cy <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Ny) + XYZ_start[,2, drop = FALSE]*(Ny^2 - 1) + XYZ_start[,3, drop = FALSE]*(Ny*Nz))
+  Cz <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Nz) + XYZ_start[,2, drop = FALSE]*(Ny*Nz)  + XYZ_start[,3, drop = FALSE]*(Nz^2 - 1))
   
-  C <- matrix(c(CX,CY,CZ))
-  P_intersect <- Conj(t(solve(S,C))) #Best intersection point of the N lines, in least squares sense
+  C <- matrix(c(Cx,Cy,Cz))
+  mat_XYZ_intersect <- Conj(t(solve(S,C)))
   
-  return(P_intersect)
-  #return(cbind(P_intersect, mean(distances), sd(distances)))
+  return(mat_XYZ_intersect)
 }
 
 # # ========================================================== 
