@@ -18,7 +18,12 @@
 #' @param step: interval (in second) at which a new sensor position will be find
 #' @param nbpairs: minimal number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
-fn_trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20) 
+
+### Main function to evaluate sensor positions for all flight lines of a LAS file
+# Does not currently work as intented because PtSourceID is not used inside sensor_positions().
+# Parallel processing should be add inside trajectory() to process all flight lines and return
+# df_sensor_positions containing a PtSourceID field.
+trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20) 
 {
   if (!"PointSourceID" %in% names(pts.LiDAR))
     stop("No 'PointSourceID' field found", call. = FALSE)
@@ -109,7 +114,7 @@ XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
   if (length(indexes_start_pulses_multiple) >= nbpairs) 
   {
     indexes_multiple_start <- indexes_start_pulses[indexes_start_pulses_multiple]
-    indexes_multiple_end <- index_multiple_start + (diff_nb_returns[indexes_start_pulses_multiple] - 1)
+    indexes_multiple_end <- indexes_multiple_start + (diff_nb_returns[indexes_start_pulses_multiple] - 1)
     
     # data.table containing coordinates XYZ of each start/end of each multiple returns pulse
     dt_start <- pts.LiDAR_subset[indexes_multiple_start, c("X","Y","Z")]
@@ -121,7 +126,9 @@ XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
     
     # Matrix containing sensor position (XYZ), gpstime and number of pulses used
     mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end)
-    return(cbind(mat_XYZ_positions, time, nrow(XYZ_start)))
+    output <- cbind(mat_XYZ_positions, time, nrow(XYZ_start))
+    
+    return(output)
   }
 }
 
@@ -134,7 +141,8 @@ XYZ_intersect <- function(XYZ_start, XYZ_end)
   # http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
   
   direction_vectors <- XYZ_end - XYZ_start
-  normalized_vectors <- direction_vectors/(matrix(sqrt(.rowSums(direction_vectors^2, dim(direction_vectors)[1], dim(direction_vectors)[2]))) %*% matrix(1, ncol = 3))
+  length_vectors <- matrix(sqrt(.rowSums(direction_vectors^2, dim(direction_vectors)[1], 3)))
+  normalized_vectors <- direction_vectors/(length_vectors %*% matrix(1, ncol = 3))
   
   Nx <- normalized_vectors[,1, drop = FALSE]
   Ny <- normalized_vectors[,2, drop = FALSE]
@@ -151,10 +159,10 @@ XYZ_intersect <- function(XYZ_start, XYZ_end)
   
   Cx <- sum(XYZ_start[,1, drop = FALSE]*(Nx^2 - 1) + XYZ_start[,2, drop = FALSE]*(Nx*Ny) + XYZ_start[,3, drop = FALSE]*(Nx*Nz))
   Cy <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Ny) + XYZ_start[,2, drop = FALSE]*(Ny^2 - 1) + XYZ_start[,3, drop = FALSE]*(Ny*Nz))
-  Cz <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Nz) + XYZ_start[,2, drop = FALSE]*(Ny*Nz)  + XYZ_start[,3, drop = FALSE]*(Nz^2 - 1))
+  Cz <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Nz) + XYZ_start[,2, drop = FALSE]*(Ny*Nz) + XYZ_start[,3, drop = FALSE]*(Nz^2 - 1))
   
   C <- matrix(c(Cx,Cy,Cz))
-  mat_XYZ_intersect <- Conj(t(solve(S,C)))
+  mat_XYZ_intersect <- t(solve(S,C))
   
   return(mat_XYZ_intersect)
 }
