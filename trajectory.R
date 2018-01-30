@@ -6,7 +6,7 @@
 #' When returns from a single pulse are detected, the sensor compute their positions as being in
 #' the center of the footprint and thus being all aligned. Because of that beheaviour, a line
 #' drawn between and beyond those returns must cross the sensor. Thus, several consecutive pulses
-#' emitted in a tight interval (e.g. 0.001 millisecond) can be used to approximate an intersection
+#' emitted in a tight interval (e.g. 0.001 second) can be used to approximate an intersection
 #' point in the sky that would correspond to the sensor position given that the sensor carrier hasn't
 #' move much during this interval. A least squares means method using pseudoinverse gives a "close
 #' enough" approximation be minimising the squared sum of the distances between the intersection
@@ -132,34 +132,76 @@ XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
   }
 }
 
-### Calculate intersection point from several returns pairs using least squares means
-XYZ_intersect <- function(XYZ_start, XYZ_end)
+### Calculate intersection point from several returns pairs using weighted least squares
+XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, weights = NULL)
 {
-  # XYZ_start: matrix n x 3 containing XYZ coordinates for each starting returns
-  # XYZ_end: matrix n x 3 containing XYZ coordinates for each ending returns
+  # XYZ_start:  matrix n x 3 containing XYZ coordinates for each starting returns
+  # XYZ_end:    matrix n x 3 containing XYZ coordinates for each ending returns
+  # min_length: minimum length that vectors from the combination of XYZ_start and
+  #             and XYZ_end must have to be kept in the analysis
+  # weights:    determine if a weights matrix will be computed
+  #              -> NULL         : compute based on vectors length
+  #              -> 1            : equal weights
+  #              -> matrix object: user-defined weights matrix
+  
   # Translated from MATLAB (Anders Eikenes, 2012)
   # http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
   
   direction_vectors <- XYZ_end - XYZ_start
   length_vectors <- matrix(sqrt(.rowSums(direction_vectors^2, dim(direction_vectors)[1], 3)))
-  normalized_vectors <- direction_vectors/(length_vectors %*% matrix(1, ncol = 3))
+  
+  # Validation of min_length argument
+  if (!is.numeric(min_length) || min_length < 0)
+    stop("Invalid min_length argument. Must be a positive numeric")
+  
+  # Filtering out vectors shorter than the specified minimum length
+  indexes_valid <- length_vectors >= min_length
+  XYZ_start <- XYZ_start[indexes_valid,, drop = FALSE]
+  direction_vectors <- direction_vectors[indexes_valid,, drop = FALSE]
+  length_vectors <- length_vectors[indexes_valid,, drop = FALSE]
+  
+  # Validation of weights argument
+  if (!is.null(weights)) {
+    if (weights != 1) {
+      dimensions <- dim(weights)
+      if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1) {
+        stop("Invalid weights argument. Must be NULL, 1 or a matrix with one column and the same number of rows as XYZ_start")
+      }
+    } else {
+      # Computing a matrix of equal weights
+      weights <- matrix(1, nrow = nrow(XYZ_start))
+    }
+  } else {
+    # Computing a weights matrix based on vectors length (the longer the length, the more weight it has)
+    # Should be modified because it isn't a linear relation
+    weights <- length_vectors / sum(length_vectors)
+  }
+  
+  normalized_vectors <- direction_vectors / (length_vectors %*% matrix(1, ncol = 3))
   
   Nx <- normalized_vectors[,1, drop = FALSE]
   Ny <- normalized_vectors[,2, drop = FALSE]
   Nz <- normalized_vectors[,3, drop = FALSE]
   
-  Sxx <- sum(Nx^2 - 1)
-  Syy <- sum(Ny^2 - 1)
-  Szz <- sum(Nz^2 - 1)
-  Sxy <- sum(Nx*Ny)
-  Sxz <- sum(Nx*Nz)
-  Syz <- sum(Ny*Nz)
+  Wxx <- weights * (Nx^2 - 1)
+  Wyy <- weights * (Ny^2 - 1)
+  Wzz <- weights * (Nz^2 - 1)
+  Wxy <- weights * Nx * Ny
+  Wxz <- weights * Nx * Nz
+  Wyz <- weights * Ny * Nz
+  
+  Sxx <- sum(Wxx)
+  Syy <- sum(Wyy)
+  Szz <- sum(Wzz)
+  Sxy <- sum(Wxy)
+  Sxz <- sum(Wxz)
+  Syz <- sum(Wyz)
   
   S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
   
-  Cx <- sum(XYZ_start[,1, drop = FALSE]*(Nx^2 - 1) + XYZ_start[,2, drop = FALSE]*(Nx*Ny) + XYZ_start[,3, drop = FALSE]*(Nx*Nz))
-  Cy <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Ny) + XYZ_start[,2, drop = FALSE]*(Ny^2 - 1) + XYZ_start[,3, drop = FALSE]*(Ny*Nz))
-  Cz <- sum(XYZ_start[,1, drop = FALSE]*(Nx*Nz) + XYZ_start[,2, drop = FALSE]*(Ny*Nz) + XYZ_start[,3, drop = FALSE]*(Nz^2 - 1))
+  Cx <- sum(XYZ_start[,1, drop = FALSE] * Wxx + XYZ_start[,2, drop = FALSE] * Wxy + XYZ_start[,3, drop = FALSE] * Wxz)
+  Cy <- sum(XYZ_start[,1, drop = FALSE] * Wxy + XYZ_start[,2, drop = FALSE] * Wyy + XYZ_start[,3, drop = FALSE] * Wyz)
+  Cz <- sum(XYZ_start[,1, drop = FALSE] * Wxz + XYZ_start[,2, drop = FALSE] * Wyz + XYZ_start[,3, drop = FALSE] * Wzz)
   
   C <- matrix(c(Cx,Cy,Cz))
   mat_XYZ_intersect <- t(solve(S,C))
