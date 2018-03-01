@@ -8,7 +8,7 @@
 #' drawn between and beyond those returns must cross the sensor. Thus, several consecutive pulses
 #' emitted in a tight interval (e.g. 0.001 second) can be used to approximate an intersection
 #' point in the sky that would correspond to the sensor position given that the sensor carrier hasn't
-#' move much during this interval. A least squares means method using pseudoinverse gives a "close
+#' move much during this interval. A weighed least squares method using pseudoinverse gives a "close
 #' enough" approximation be minimising the squared sum of the distances between the intersection
 #' point and all the lines.
 #' @param pts.LiDAR: data.table containing the LiDAR data as read with rlas::readlasdata
@@ -16,14 +16,16 @@
 #' found will be use)
 #' @param bin: interval (in second) in which a unqiue sensor position will be find
 #' @param step: interval (in second) at which a new sensor position will be find
-#' @param nbpairs: minimal number of multiple return pairs needed to estimate a sensor position
+#' @param min_length: minimum length that vectors from the combination of XYZ_start and
+#' XYZ_end must have to be kept in the analysis
+#' @param nbpairs: minimum number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
 
 ### Main function to evaluate sensor positions for all flight lines of a LAS file
 # Does not currently work as intented because PtSourceID is not used inside sensor_positions().
 # Parallel processing should be add inside trajectory() to process all flight lines and return
 # df_sensor_positions containing a PtSourceID field.
-trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20) 
+trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, min_length = 2, nbpairs = 20) 
 {
   if (!"PointSourceID" %in% names(pts.LiDAR))
     stop("No 'PointSourceID' field found", call. = FALSE)
@@ -33,7 +35,7 @@ trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpa
 
   data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
   
-  df_sensor_positions <- sensor_positions(pts.LiDAR, bin, step, nbpairs)
+  df_sensor_positions <- sensor_positions(pts.LiDAR, bin, step, min_length, nbpairs)
   
   return(df_sensor_positions)
 }
@@ -41,7 +43,7 @@ trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, nbpa
 Rcpp::sourceCpp("C_fn_interval.cpp")
 
 ### Evaluate sensor positions for a specific flight line
-sensor_positions <- function(pts.LiDAR, bin, step, nbpairs) 
+sensor_positions <- function(pts.LiDAR, bin, step, min_length, nbpairs) 
 {
   # Time elapsed from first point to last point
   last <- nrow(pts.LiDAR)
@@ -60,16 +62,17 @@ sensor_positions <- function(pts.LiDAR, bin, step, nbpairs)
   ls_bins_ends <- bins_ends(nb_bins, bin, step, nbpairs, cumulative_sum)
   
   # Generate a list of XYZ coordinates corresponding to the estimated sensor position
-  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, pts.LiDAR, nbpairs) 
+  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, pts.LiDAR, min_length, nbpairs) 
   mat_sensor_positions <- do.call("rbind", ls_sensor_positions)
   
-  if(is.null(mat_sensor_positions)) 
-    stop("The algorithm failed computing sensor position")
-  
-  # Generate a data.frame containing sensor position (XYZ), gpstime and nbpairs
-  df_sensor_positions <- data.frame(mat_sensor_positions)
-  names(df_sensor_positions) <- c("X", "Y", "Z", "gpstime", "NbPairs")
-  
+  if (is.null(mat_sensor_positions)) {
+    df_sensor_positions <- NULL
+    warning("The algorithm failed computing any sensor position. NULL value returned")
+  } else {
+    # Generate a data.frame containing sensor position (XYZ), gpstime and nbpairs
+    df_sensor_positions <- data.frame(mat_sensor_positions)
+    names(df_sensor_positions) <- c("X", "Y", "Z", "gpstime", "NbPairs")
+  }
   return(df_sensor_positions)
 }
 
@@ -94,7 +97,7 @@ bins_ends <- function(nb_bins, bin, step, nbpairs, cumulative_sum)
 }
 
 ### Estimate for a specific bin the sensor position
-XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
+XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, min_length, nbpairs)
 {
   # Subset containing only returns within a specific bin
   pts.LiDAR_subset <- pts.LiDAR.sourceID[ends_indexes[1]:ends_indexes[2]]
@@ -125,20 +128,25 @@ XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, nbpairs)
     time <- pts.LiDAR_subset[[1, "gpstime"]]
     
     # Matrix containing sensor position (XYZ), gpstime and number of pulses used
-    mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end)
-    output <- cbind(mat_XYZ_positions, time, nrow(XYZ_start))
+    mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end, nbpairs = nbpairs)
     
+    if (!is.null(mat_XYZ_positions)) {
+      output <- cbind(mat_XYZ_positions, gpstime = time, NbPairs = nrow(XYZ_start))
+    } else {
+      output <- NULL
+    }
     return(output)
   }
 }
 
 ### Calculate intersection point from several returns pairs using weighted least squares
-XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, weights = NULL)
+XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weights = NULL)
 {
   # XYZ_start:  matrix n x 3 containing XYZ coordinates for each starting returns
   # XYZ_end:    matrix n x 3 containing XYZ coordinates for each ending returns
   # min_length: minimum length that vectors from the combination of XYZ_start and
   #             and XYZ_end must have to be kept in the analysis
+  # nbpairs:    minimal number of multiple return pairs needed to estimate a sensor position
   # weights:    determine if a weights matrix will be computed
   #              -> NULL         : compute based on vectors length
   #              -> 1            : equal weights
@@ -160,52 +168,57 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, weights = NULL)
   direction_vectors <- direction_vectors[indexes_valid,, drop = FALSE]
   length_vectors <- length_vectors[indexes_valid,, drop = FALSE]
   
-  # Validation of weights argument
-  if (!is.null(weights)) {
-    if (weights != 1) {
-      dimensions <- dim(weights)
-      if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1) {
-        stop("Invalid weights argument. Must be NULL, 1 or a matrix with one column and the same number of rows as XYZ_start")
+  # Validation that the minimum number of pairs requirement is still meet after filtering
+  if (nrow(XYZ_start) >= nbpairs) {
+    # Validation of weights argument
+    if (!is.null(weights)) {
+      if (weights != 1) {
+        dimensions <- dim(weights)
+        if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1) {
+          stop("Invalid weights argument. Must be NULL, 1 or a matrix with one column and the same number of rows as XYZ_start")
+        }
+      } else {
+        # Computing a matrix of equal weights
+        weights <- matrix(1, nrow = nrow(XYZ_start))
       }
     } else {
-      # Computing a matrix of equal weights
-      weights <- matrix(1, nrow = nrow(XYZ_start))
+      # Computing a weights matrix based on vectors length (the longer the length, the more weight it has)
+      # Should be modified because it isn't a linear relation
+      weights <- length_vectors / sum(length_vectors)
     }
+
+    normalized_vectors <- direction_vectors / (length_vectors %*% matrix(1, ncol = 3))
+
+    Nx <- normalized_vectors[,1, drop = FALSE]
+    Ny <- normalized_vectors[,2, drop = FALSE]
+    Nz <- normalized_vectors[,3, drop = FALSE]
+
+    Wxx <- weights * (Nx^2 - 1)
+    Wyy <- weights * (Ny^2 - 1)
+    Wzz <- weights * (Nz^2 - 1)
+    Wxy <- weights * Nx * Ny
+    Wxz <- weights * Nx * Nz
+    Wyz <- weights * Ny * Nz
+
+    Sxx <- sum(Wxx)
+    Syy <- sum(Wyy)
+    Szz <- sum(Wzz)
+    Sxy <- sum(Wxy)
+    Sxz <- sum(Wxz)
+    Syz <- sum(Wyz)
+
+    S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
+
+    Cx <- sum(XYZ_start[,1, drop = FALSE] * Wxx + XYZ_start[,2, drop = FALSE] * Wxy + XYZ_start[,3, drop = FALSE] * Wxz)
+    Cy <- sum(XYZ_start[,1, drop = FALSE] * Wxy + XYZ_start[,2, drop = FALSE] * Wyy + XYZ_start[,3, drop = FALSE] * Wyz)
+    Cz <- sum(XYZ_start[,1, drop = FALSE] * Wxz + XYZ_start[,2, drop = FALSE] * Wyz + XYZ_start[,3, drop = FALSE] * Wzz)
+
+    C <- matrix(c(Cx,Cy,Cz))
+    mat_XYZ_intersect <- t(solve(S,C))
+    colnames(mat_XYZ_intersect) <- c("X", "Y", "Z")
   } else {
-    # Computing a weights matrix based on vectors length (the longer the length, the more weight it has)
-    # Should be modified because it isn't a linear relation
-    weights <- length_vectors / sum(length_vectors)
+    mat_XYZ_intersect <- NULL
   }
-  
-  normalized_vectors <- direction_vectors / (length_vectors %*% matrix(1, ncol = 3))
-  
-  Nx <- normalized_vectors[,1, drop = FALSE]
-  Ny <- normalized_vectors[,2, drop = FALSE]
-  Nz <- normalized_vectors[,3, drop = FALSE]
-  
-  Wxx <- weights * (Nx^2 - 1)
-  Wyy <- weights * (Ny^2 - 1)
-  Wzz <- weights * (Nz^2 - 1)
-  Wxy <- weights * Nx * Ny
-  Wxz <- weights * Nx * Nz
-  Wyz <- weights * Ny * Nz
-  
-  Sxx <- sum(Wxx)
-  Syy <- sum(Wyy)
-  Szz <- sum(Wzz)
-  Sxy <- sum(Wxy)
-  Sxz <- sum(Wxz)
-  Syz <- sum(Wyz)
-  
-  S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
-  
-  Cx <- sum(XYZ_start[,1, drop = FALSE] * Wxx + XYZ_start[,2, drop = FALSE] * Wxy + XYZ_start[,3, drop = FALSE] * Wxz)
-  Cy <- sum(XYZ_start[,1, drop = FALSE] * Wxy + XYZ_start[,2, drop = FALSE] * Wyy + XYZ_start[,3, drop = FALSE] * Wyz)
-  Cz <- sum(XYZ_start[,1, drop = FALSE] * Wxz + XYZ_start[,2, drop = FALSE] * Wyz + XYZ_start[,3, drop = FALSE] * Wzz)
-  
-  C <- matrix(c(Cx,Cy,Cz))
-  mat_XYZ_intersect <- t(solve(S,C))
-  
   return(mat_XYZ_intersect)
 }
 
