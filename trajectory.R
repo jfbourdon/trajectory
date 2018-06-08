@@ -8,12 +8,10 @@
 #' drawn between and beyond those returns must cross the sensor. Thus, several consecutive pulses
 #' emitted in a tight interval (e.g. 0.001 second) can be used to approximate an intersection
 #' point in the sky that would correspond to the sensor position given that the sensor carrier hasn't
-#' move much during this interval. A weighed least squares method using pseudoinverse gives a "close
+#' moved much during this interval. A weighed least squares method using pseudoinverse gives a "close
 #' enough" approximation be minimising the squared sum of the distances between the intersection
 #' point and all the lines.
 #' @param pts.LiDAR: data.table containing the LiDAR data as read with rlas::readlasdata
-#' @param PtSourceID: vector containing flight line numbers to use (if NULL, all flight lines 
-#' found will be use)
 #' @param bin: interval (in second) in which a unqiue sensor position will be find
 #' @param step: interval (in second) at which a new sensor position will be find
 #' @param min_length: minimum length that vectors from the combination of XYZ_start and
@@ -21,30 +19,23 @@
 #' @param nbpairs: minimum number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
 
-### Main function to evaluate sensor positions for all flight lines of a LAS file
-# Does not currently work as intented because PtSourceID is not used inside sensor_positions().
-# Parallel processing should be add inside trajectory() to process all flight lines and return
-# df_sensor_positions containing a PtSourceID field.
-trajectory <- function(pts.LiDAR, PtSourceID = NULL, bin = 0.001, step = 2, min_length = 2, nbpairs = 20) 
+### Main function to evaluate sensor positions based on the LiDAR points provided.
+
+Rcpp::sourceCpp("C_fn_interval.cpp")
+
+### Evaluate sensor positions from LiDAR points. Points must all have the same PointSourceID.
+sensor_positions <- function(pts.LiDAR, bin = 0.001, step = 2, min_length = 2, nbpairs = 20)
 {
   if (!"PointSourceID" %in% names(pts.LiDAR))
     stop("No 'PointSourceID' field found", call. = FALSE)
   
-  if (is.null(PtSourceID))
-    PtSourceID <- fast_unique(pts.LiDAR$PointSourceID)
-
+  PtSourceID <- fast_unique(pts.LiDAR$PointSourceID)
+  if (length(PtSourceID) != 1)
+    stop("Must provide data with a unique PointSourceID value")
+  
+  # Reordering of input data by gpstime and ReturnNumber
   data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
   
-  df_sensor_positions <- sensor_positions(pts.LiDAR, bin, step, min_length, nbpairs)
-  
-  return(df_sensor_positions)
-}
-
-Rcpp::sourceCpp("C_fn_interval.cpp")
-
-### Evaluate sensor positions for a specific flight line
-sensor_positions <- function(pts.LiDAR, bin, step, min_length, nbpairs) 
-{
   # Time elapsed from first point to last point
   last <- nrow(pts.LiDAR)
   tf <- pts.LiDAR[[last,"gpstime"]] 
@@ -152,7 +143,7 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weigh
   #              -> 1            : equal weights
   #              -> matrix object: user-defined weights matrix
   
-  # Translated from MATLAB (Anders Eikenes, 2012)
+  # Translated and adapted from MATLAB (Anders Eikenes, 2012)
   # http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
   
   direction_vectors <- XYZ_end - XYZ_start
@@ -221,53 +212,3 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weigh
   }
   return(mat_XYZ_intersect)
 }
-
-# # ========================================================== 
-# # A RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
-# # distances perpendiculaires entre le point et les lignes
-# 
-# dist3d <- function(ii, a, b, c) 
-# {
-#   v1 <- b[ii,] - c[ii,]
-#   v2sp: <- a[1,] - b[ii,]      
-#   v3 <- cross3d_prod(v1,v2)
-#   area <- sqrt(sum(v3*v3))/2
-#   d <- 2*area/sqrt(sum(v1*v1))
-#   return(d)
-# }
-# 
-# cross3d_prod <- function(v1, v2)
-# {
-#   v3 <- vector()
-#   v3[1] <- v1[2]*v2[3]-v1[3]*v2[2]
-#   v3[2] <- v1[3]*v2[1]-v1[1]*v2[3]
-#   v3[3] <- v1[1]*v2[2]-v1[2]*v2[1]
-#   return(v3)
-# }
-# 
-# N <- dim(PA)[1]
-# 
-# #Distances from intersection point to the input lines
-# distances<-sapply(1:N, dist3d, P_intersect, PA, PB) 
-# 
-# # func_ECDF<-ecdf(distances)
-# # 
-# # eval.max<-max(distances)
-# # eval.min<-min(distances)
-# # limite<-0.8
-# # 
-# # while (abs(mean(c(eval.max, eval.min))-eval)>0.001) {
-# #   eval<-mean(c(eval.max, eval.min))
-# #   if(func_ECDF(eval)<limite) {
-# #     eval.min<-eval
-# #   } else {
-# #     eval.max<-eval
-# #   }
-# # }
-# # 
-# # plot(func_ECDF, main="Distribution cumulative des distances au point", ylab="Proportion", xlab="Distance (m)")
-# # abline(h=limite, lty=2, col="red")
-# # abline(v=eval, lwd=2, col="red")
-# # text(1, paste0(sprintf("%.1f", eval)," m @ ", limite), pos=1, col="red", font=2)
-# ## FIN de ? RETIRER SI NE SERT PAS ? UNE QUELCONQUE VALIDATION
-# # ======================================================================================
