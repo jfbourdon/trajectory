@@ -1,17 +1,21 @@
 library(lidR)
 
-file = "~/Téléchargements/Aircraft position JF/L006-1_2017_HARV_4_V01_2017081715_P01_r.laz"
-
-source("fn_trajectory.R")
-
-ctg = catalog(file)
+ctg = catalog("~/Documents/ALS data/Montmorency dataset/las/")
+ctg = ctg[c(380,381,382,406,407, 408, 432, 433, 434, 459,460),]
 plot(ctg)
 
-las = readLAS(file, select = "xyzrtp", filter= "-drop_single -drop_y_above 4716800")
+source("trajectory.R")
 
-output = fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20)
+las = readLAS(ctg$filename, select = "xyzrtp", filter = "-keep_point_source 8 -drop_single")
+plot(las)
 
-sp::plot(output)
+output = sensor_positions(las, bin = 0.001)
+Z <- output@coords[,3]
+output@coords = output@coords[,-3]
+output$Z <- Z
+
+x = plot(las)
+add_treetops3d(x, output, radius = 10)
 
 report = profvis::profvis({fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20)})
 

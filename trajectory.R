@@ -11,81 +11,76 @@
 #' moved much during this interval. A weighed least squares method using pseudoinverse gives a "close
 #' enough" approximation be minimising the squared sum of the distances between the intersection
 #' point and all the lines.
-#' @param pts.LiDAR: data.table containing the LiDAR data as read with rlas::readlasdata
-#' @param bin: interval (in second) in which a unqiue sensor position will be find
-#' @param step: interval (in second) at which a new sensor position will be find
-#' @param min_length: minimum length that vectors from the combination of XYZ_start and
+#' @param las An object of class LAS containing the LiDAR data as read with \link[lidR:readLAS]{readLAS}
+#' @param bin numeric interval (in second) in which a unique sensor position will be find
+#' @param min_length numeric minimum length that vectors from the combination of XYZ_start and
 #' XYZ_end must have to be kept in the analysis
-#' @param nbpairs: minimum number of multiple return pairs needed to estimate a sensor position
+#' @param nbpairs minimum number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
 
-### Main function to evaluate sensor positions based on the LiDAR points provided.
-
-Rcpp::sourceCpp("C_fn_interval.cpp")
-
 ### Evaluate sensor positions from LiDAR points. Points must all have the same PointSourceID.
-sensor_positions <- function(pts.LiDAR, bin = 0.001, step = 2, min_length = 2, nbpairs = 20)
+sensor_positions <- function(las, bin = 0.001, min_length = 2, nbpairs = 20)
 {
-  if (!"PointSourceID" %in% names(pts.LiDAR))
-    stop("No 'PointSourceID' field found", call. = FALSE)
+  if (!"PointSourceID" %in% names(las@data))
+    stop("No 'PointSourceID' attribute found", call. = FALSE)
   
-  PtSourceID <- fast_unique(pts.LiDAR$PointSourceID)
+  PtSourceID <- fast_unique(las@data$PointSourceID)
+  
   if (length(PtSourceID) != 1)
     stop("Must provide data with a unique PointSourceID value")
   
   # Reordering of input data by gpstime and ReturnNumber
-  data.table::setorder(pts.LiDAR, gpstime, ReturnNumber)
+  data.table::setorder(las@data, gpstime, ReturnNumber)
   
-  # Time elapsed from first point to last point
-  last <- nrow(pts.LiDAR)
-  tf <- pts.LiDAR[[last,"gpstime"]] 
-  ti <- pts.LiDAR[[1,"gpstime"]]
-  elapsed <- (tf - ti)/(bin + step)
-  
-  # Number of bins
-  if (elapsed - floor(elapsed) > bin) 
-    nb_bins <- floor(elapsed) + 1
-  else 
-    nb_bins <- floor(elapsed)
-  
-  # Generate a list of the ends (line numbers) of each bin
-  cumulative_sum <- fast_cumsum_diff(pts.LiDAR[["gpstime"]])
-  ls_bins_ends <- bins_ends(nb_bins, bin, step, nbpairs, cumulative_sum)
+  ## Generate a list of the ends (line numbers) of each bin
+  t     <- las@data[["gpstime"]]
+  bins  <- findInterval(t, seq(min(t), max(t), 1))
+  rle_t <- rle(bins)
+  end   <- cumsum(rle_t$lengths)
+  start <- c(1, end[-length(end)] + 1)
+  ls_bins_ends <- mapply(function(x,y) { c(x,y) }, start, end, SIMPLIFY = FALSE)
   
   # Generate a list of XYZ coordinates corresponding to the estimated sensor position
-  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, pts.LiDAR, min_length, nbpairs) 
+  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, las@data, min_length, nbpairs) 
   mat_sensor_positions <- do.call("rbind", ls_sensor_positions)
   
-  if (is.null(mat_sensor_positions)) {
+  if (is.null(mat_sensor_positions)) 
+  {
     df_sensor_positions <- NULL
     warning("The algorithm failed computing any sensor position. NULL value returned")
-  } else {
+  } 
+  else 
+  {
     # Generate a data.frame containing sensor position (XYZ), gpstime and nbpairs
     df_sensor_positions <- data.frame(mat_sensor_positions)
-    names(df_sensor_positions) <- c("X", "Y", "Z", "gpstime", "NbPairs")
+    df_sensor_positions = sp::SpatialPointsDataFrame(df_sensor_positions[,1:3], df_sensor_positions[,4:5])
+    
   }
+  
   return(df_sensor_positions)
 }
 
+Rcpp::sourceCpp("C_fn_interval.cpp")
+
 ### Find indexes (line numbers) of start/end of each bin
-bins_ends <- function(nb_bins, bin, step, nbpairs, cumulative_sum)
-{
-  indexes <- C_fn_interval(nb_bins, bin, step, nbpairs, cumulative_sum)
-  indexes_start <- indexes$debut
-  indexes_end <- indexes$fin
-  
-  output <- list()
-  
-  for (i in 1:nb_bins)
-  {
-    npulse <- length(unique(cumulative_sum[indexes_start[i]:indexes_end[i]])) + 1
-    
-    if (npulse > nbpairs) 
-      output[[length(output) + 1]] <- c(indexes_start[i], indexes_end[i])
-  }
-  
-  return(output)
-}
+# bins_ends <- function(nb_bins, bin, step, nbpairs, cumulative_sum)
+# {
+#   indexes <- C_fn_interval(nb_bins, bin, step, nbpairs, cumulative_sum)
+#   indexes_start <- indexes$debut
+#   indexes_end <- indexes$fin
+#   
+#   output <- list()
+#   
+#   for (i in 1:nb_bins)
+#   {
+#     npulse <- length(unique(cumulative_sum[indexes_start[i]:indexes_end[i]])) + 1
+#     
+#     if (npulse > nbpairs) 
+#       output[[length(output) + 1]] <- c(indexes_start[i], indexes_end[i])
+#   }
+#   
+#   return(output)
+# }
 
 ### Estimate for a specific bin the sensor position
 XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, min_length, nbpairs)
@@ -121,11 +116,11 @@ XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, min_length, n
     # Matrix containing sensor position (XYZ), gpstime and number of pulses used
     mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end, nbpairs = nbpairs)
     
-    if (!is.null(mat_XYZ_positions)) {
+    if (!is.null(mat_XYZ_positions)) 
       output <- cbind(mat_XYZ_positions, gpstime = time, NbPairs = nrow(XYZ_start))
-    } else {
+    else 
       output <- NULL
-    }
+    
     return(output)
   }
 }
@@ -160,19 +155,25 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weigh
   length_vectors <- length_vectors[indexes_valid,, drop = FALSE]
   
   # Validation that the minimum number of pairs requirement is still meet after filtering
-  if (nrow(XYZ_start) >= nbpairs) {
+  if (nrow(XYZ_start) >= nbpairs) 
+  {
     # Validation of weights argument
-    if (!is.null(weights)) {
-      if (weights != 1) {
+    if (!is.null(weights)) 
+    {
+      if (weights != 1) 
+      {
         dimensions <- dim(weights)
-        if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1) {
+        if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1)
           stop("Invalid weights argument. Must be NULL, 1 or a matrix with one column and the same number of rows as XYZ_start")
-        }
-      } else {
+      } 
+      else 
+      {
         # Computing a matrix of equal weights
         weights <- matrix(1, nrow = nrow(XYZ_start))
       }
-    } else {
+    } 
+    else 
+    {
       # Computing a weights matrix based on vectors length (the longer the length, the more weight it has)
       # Should be modified because it isn't a linear relation
       weights <- length_vectors / sum(length_vectors)
@@ -207,8 +208,11 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weigh
     C <- matrix(c(Cx,Cy,Cz))
     mat_XYZ_intersect <- t(solve(S,C))
     colnames(mat_XYZ_intersect) <- c("X", "Y", "Z")
-  } else {
+  } 
+  else 
+  {
     mat_XYZ_intersect <- NULL
   }
+  
   return(mat_XYZ_intersect)
 }
