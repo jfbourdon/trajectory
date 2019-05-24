@@ -54,8 +54,8 @@ sensor_tracking <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
   bins <- lidR:::round_any(data$gpstime, bin)
   
   # Find the position P of the sensor in each bin
-  P <- data[, if(.N > 2*nbpairs) sensor_positions(X,Y,Z, ReturnNumber, min_length), by = bins]
-  P <- sp::SpatialPointsDataFrame(P[,2:4], P[,c(1,5)])
+  P <- data[, if(.N > 2*nbpairs) sensor_positions(X,Y,Z, ReturnNumber, min_length), by = .(bins, PointSourceID)]
+  P <- sp::SpatialPointsDataFrame(P[,3:5], P[,c(1,2,6)])
   
   return(P)
 }
