@@ -7,10 +7,10 @@ plot(ctg)
 
 source("trajectory.R")
 
-las = readLAS(ctg$filename, select = "xyzrtp", filter = "-keep_point_source 8 -drop_single")
+las = readLAS(ctg$filename, select = "xyzrntp", filter = "-keep_point_source 8 -drop_single")
 plot(las)
 
-output = sensor_positions(las, bin = 0.5)
+output = sensor_tracking(las, bin = 0.5)
 Z <- output@coords[,3]
 output@coords = output@coords[,-3]
 output$Z <- Z

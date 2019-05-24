@@ -13,126 +13,65 @@
 #' point and all the lines.
 #' @param las An object of class LAS containing the LiDAR data as read with \link[lidR:readLAS]{readLAS}
 #' @param bin numeric interval (in second) in which a unique sensor position will be find
-#' @param min_length numeric minimum length that vectors from the combination of XYZ_start and
-#' XYZ_end must have to be kept in the analysis
+#' @param min_length numeric minimum length that vectors from the combination of Start and
+#' End must have to be kept in the analysis
 #' @param nbpairs minimum number of multiple return pairs needed to estimate a sensor position
 #' @author Jean-Francois Bourdon
 
 ### Evaluate sensor positions from LiDAR points. Points must all have the same PointSourceID.
-sensor_positions <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
+sensor_tracking <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
 {
   if (!"PointSourceID" %in% names(las@data))
     stop("No 'PointSourceID' attribute found", call. = FALSE)
   
-  PtSourceID <- fast_unique(las@data$PointSourceID)
+  if (!"gpstime" %in% names(las@data))
+    stop("No 'gpstime' attribute found", call. = FALSE)
   
-  if (length(PtSourceID) != 1)
-    stop("Must provide data with a unique PointSourceID value")
+  if (!"ReturnNumber" %in% names(las@data))
+    stop("No 'ReturnNumber' attribute found", call. = FALSE)
+  
+  if (!"NumberOfReturns" %in% names(las@data))
+    stop("No 'NumberOfReturns' attribute found", call. = FALSE)
+  
+  if (!is.numeric(min_length) || min_length < 0)
+    stop("Invalid min_length argument. Must be a positive numeric")
+
+  data <- las@data
   
   # Reordering of input data by gpstime and ReturnNumber
-  data.table::setorder(las@data, gpstime, ReturnNumber)
+  data.table::setorder(data, gpstime, ReturnNumber)
   
-  ## Generate a list of the ends (line numbers) of each bin
-  t     <- las@data[["gpstime"]]
-  bins  <- findInterval(t, seq(min(t), max(t), bin))
-  rle_t <- rle(bins)
-  end   <- cumsum(rle_t$lengths)
-  start <- c(1, end[-length(end)] + 1)
-  ls_bins_ends <- mapply(function(x,y) { c(x,y) }, start, end, SIMPLIFY = FALSE)
+  # Get only the first and last returns of multiple returns
+  data$pulseID <- lidR:::.lagisdiff(data[["gpstime"]])
+  data <- data[(ReturnNumber == NumberOfReturns | ReturnNumber == 1) & NumberOfReturns > 1]
   
-  # Generate a list of XYZ coordinates corresponding to the estimated sensor position
-  ls_sensor_positions <- lapply(ls_bins_ends, XYZ_sensor_positions, las@data, min_length, nbpairs) 
-  mat_sensor_positions <- do.call("rbind", ls_sensor_positions)
+  # Filter some edge points that may not be paired
+  count <- lidR:::fast_table(data$pulseID,  max(data$pulseID))
+  ii    <- which(count == 1)
+  data  <- data[!pulseID %in% ii]
   
-  if (is.null(mat_sensor_positions)) 
-  {
-    df_sensor_positions <- NULL
-    warning("The algorithm failed computing any sensor position. NULL value returned")
-  } 
-  else 
-  {
-    # Generate a data.frame containing sensor position (XYZ), gpstime and nbpairs
-    df_sensor_positions <- data.frame(mat_sensor_positions)
-    df_sensor_positions = sp::SpatialPointsDataFrame(df_sensor_positions[,1:3], df_sensor_positions[,4:5])
-    
-  }
+  # Generate the bins
+  bins <- lidR:::round_any(data$gpstime, bin)
   
-  return(df_sensor_positions)
+  # Find the position P of the sensor in each bin
+  P <- data[, if(.N > 2*nbpairs) sensor_positions(X,Y,Z, ReturnNumber, min_length), by = bins]
+  P <- sp::SpatialPointsDataFrame(P[,2:4], P[,c(1,5)])
+  
+  return(P)
 }
-
-Rcpp::sourceCpp("C_fn_interval.cpp")
-
-### Find indexes (line numbers) of start/end of each bin
-# bins_ends <- function(nb_bins, bin, step, nbpairs, cumulative_sum)
-# {
-#   indexes <- C_fn_interval(nb_bins, bin, step, nbpairs, cumulative_sum)
-#   indexes_start <- indexes$debut
-#   indexes_end <- indexes$fin
-#   
-#   output <- list()
-#   
-#   for (i in 1:nb_bins)
-#   {
-#     npulse <- length(unique(cumulative_sum[indexes_start[i]:indexes_end[i]])) + 1
-#     
-#     if (npulse > nbpairs) 
-#       output[[length(output) + 1]] <- c(indexes_start[i], indexes_end[i])
-#   }
-#   
-#   return(output)
-# }
 
 ### Estimate for a specific bin the sensor position
-XYZ_sensor_positions <- function(ends_indexes, pts.LiDAR.sourceID, min_length, nbpairs)
+sensor_positions <- function(x, y, z, rn, min_length, weights = NULL)
 {
-  # Subset containing only returns within a specific bin
-  pts.LiDAR_subset <- pts.LiDAR.sourceID[ends_indexes[1]:ends_indexes[2]]
+  first <- rn == 1
+  last  <- rn > 1
+  Start <- matrix(c(x[first], y[first], z[first]), ncol = 3L)
+  End   <- matrix(c(x[last], y[last], z[last]), ncol = 3L)
   
-  # Lagged difference of gpstime of returns within a specific bin
-  diff_gpstime <- diff(pts.LiDAR_subset[["gpstime"]])
-  
-  # Generate a vector containing the start position (line) of each pulse
-  indexes_start_pulses <- c(1, which(diff_gpstime != 0) + 1)
-  
-  # Generate a vector containing the start position (line) of each pulse with two or more returns
-  #  Can't use the NumberOfReturns and ReturnNumber fields in case the dataset has been cleaned
-  #  and that some returns are missing
-  diff_nb_returns <- diff(indexes_start_pulses)
-  indexes_start_pulses_multiple <- which(diff_nb_returns >= 2)
-  
-  if (length(indexes_start_pulses_multiple) >= nbpairs) 
-  {
-    indexes_multiple_start <- indexes_start_pulses[indexes_start_pulses_multiple]
-    indexes_multiple_end <- indexes_multiple_start + (diff_nb_returns[indexes_start_pulses_multiple] - 1)
-    
-    # data.table containing coordinates XYZ of each start/end of each multiple returns pulse
-    dt_start <- pts.LiDAR_subset[indexes_multiple_start, c("X","Y","Z")]
-    dt_end <- pts.LiDAR_subset[indexes_multiple_end, c("X","Y","Z")]
-    
-    XYZ_start <- as.matrix(dt_end)
-    XYZ_end   <- as.matrix(dt_start)
-    time <- pts.LiDAR_subset[[1, "gpstime"]]
-    
-    # Matrix containing sensor position (XYZ), gpstime and number of pulses used
-    mat_XYZ_positions <- XYZ_intersect(XYZ_start, XYZ_end, nbpairs = nbpairs)
-    
-    if (!is.null(mat_XYZ_positions)) 
-      output <- cbind(mat_XYZ_positions, gpstime = time, NbPairs = nrow(XYZ_start))
-    else 
-      output <- NULL
-    
-    return(output)
-  }
-}
-
-### Calculate intersection point from several returns pairs using weighted least squares
-XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weights = NULL)
-{
-  # XYZ_start:  matrix n x 3 containing XYZ coordinates for each starting returns
-  # XYZ_end:    matrix n x 3 containing XYZ coordinates for each ending returns
-  # min_length: minimum length that vectors from the combination of XYZ_start and
-  #             and XYZ_end must have to be kept in the analysis
-  # nbpairs:    minimal number of multiple return pairs needed to estimate a sensor position
+  # Start:  matrix n x 3 containing XYZ coordinates for each starting returns
+  # End:    matrix n x 3 containing XYZ coordinates for each ending returns
+  # min_length: minimum length that vectors from the combination of Start and
+  #             and End must have to be kept in the analysis
   # weights:    determine if a weights matrix will be computed
   #              -> NULL         : compute based on vectors length
   #              -> 1            : equal weights
@@ -141,78 +80,49 @@ XYZ_intersect <- function(XYZ_start, XYZ_end, min_length = 0, nbpairs = 0, weigh
   # Translated and adapted from MATLAB (Anders Eikenes, 2012)
   # http://www.mathworks.com/matlabcentral/fileexchange/37192-intersection-point-of-lines-in-3d-space
   
-  direction_vectors <- XYZ_end - XYZ_start
-  length_vectors <- matrix(sqrt(.rowSums(direction_vectors^2, dim(direction_vectors)[1], 3)))
-  
-  # Validation of min_length argument
-  if (!is.numeric(min_length) || min_length < 0)
-    stop("Invalid min_length argument. Must be a positive numeric")
+  Direction <- End - Start
+  length_vectors <- matrix(sqrt(.rowSums(Direction^2, dim(Direction)[1], 3)))
   
   # Filtering out vectors shorter than the specified minimum length
   indexes_valid <- length_vectors >= min_length
-  XYZ_start <- XYZ_start[indexes_valid,, drop = FALSE]
-  direction_vectors <- direction_vectors[indexes_valid,, drop = FALSE]
+  Start <- Start[indexes_valid,, drop = FALSE]
+  Direction <- Direction[indexes_valid,, drop = FALSE]
   length_vectors <- length_vectors[indexes_valid,, drop = FALSE]
   
-  # Validation that the minimum number of pairs requirement is still meet after filtering
-  if (nrow(XYZ_start) >= nbpairs) 
-  {
-    # Validation of weights argument
-    if (!is.null(weights)) 
-    {
-      if (weights != 1) 
-      {
-        dimensions <- dim(weights)
-        if (is.null(dimensions) || dimensions[1] != nrow(XYZ_start) || dimensions[2] != 1)
-          stop("Invalid weights argument. Must be NULL, 1 or a matrix with one column and the same number of rows as XYZ_start")
-      } 
-      else 
-      {
-        # Computing a matrix of equal weights
-        weights <- matrix(1, nrow = nrow(XYZ_start))
-      }
-    } 
-    else 
-    {
-      # Computing a weights matrix based on vectors length (the longer the length, the more weight it has)
-      # Should be modified because it isn't a linear relation
-      weights <- length_vectors / sum(length_vectors)
-    }
-
-    normalized_vectors <- direction_vectors / (length_vectors %*% matrix(1, ncol = 3))
-
-    Nx <- normalized_vectors[,1, drop = FALSE]
-    Ny <- normalized_vectors[,2, drop = FALSE]
-    Nz <- normalized_vectors[,3, drop = FALSE]
-
-    Wxx <- weights * (Nx^2 - 1)
-    Wyy <- weights * (Ny^2 - 1)
-    Wzz <- weights * (Nz^2 - 1)
-    Wxy <- weights * Nx * Ny
-    Wxz <- weights * Nx * Nz
-    Wyz <- weights * Ny * Nz
-
-    Sxx <- sum(Wxx)
-    Syy <- sum(Wyy)
-    Szz <- sum(Wzz)
-    Sxy <- sum(Wxy)
-    Sxz <- sum(Wxz)
-    Syz <- sum(Wyz)
-
-    S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
-
-    Cx <- sum(XYZ_start[,1, drop = FALSE] * Wxx + XYZ_start[,2, drop = FALSE] * Wxy + XYZ_start[,3, drop = FALSE] * Wxz)
-    Cy <- sum(XYZ_start[,1, drop = FALSE] * Wxy + XYZ_start[,2, drop = FALSE] * Wyy + XYZ_start[,3, drop = FALSE] * Wyz)
-    Cz <- sum(XYZ_start[,1, drop = FALSE] * Wxz + XYZ_start[,2, drop = FALSE] * Wyz + XYZ_start[,3, drop = FALSE] * Wzz)
-
-    C <- matrix(c(Cx,Cy,Cz))
-    mat_XYZ_intersect <- t(solve(S,C))
-    colnames(mat_XYZ_intersect) <- c("X", "Y", "Z")
-  } 
-  else 
-  {
-    mat_XYZ_intersect <- NULL
-  }
+  # Validation of weights argument
+  if (is.null(weights))
+    weights <- length_vectors / sum(length_vectors)
+  else if (length(weights) == 1L)
+    weights <- matrix(weights, nrow = nrow(Start))
   
-  return(mat_XYZ_intersect)
+  normalized_vectors <- Direction / (length_vectors %*% matrix(1, ncol = 3))
+  
+  Nx <- normalized_vectors[,1, drop = FALSE]
+  Ny <- normalized_vectors[,2, drop = FALSE]
+  Nz <- normalized_vectors[,3, drop = FALSE]
+  
+  Wxx <- weights * (Nx^2 - 1)
+  Wyy <- weights * (Ny^2 - 1)
+  Wzz <- weights * (Nz^2 - 1)
+  Wxy <- weights * Nx * Ny
+  Wxz <- weights * Nx * Nz
+  Wyz <- weights * Ny * Nz
+  
+  Sxx <- sum(Wxx)
+  Syy <- sum(Wyy)
+  Szz <- sum(Wzz)
+  Sxy <- sum(Wxy)
+  Sxz <- sum(Wxz)
+  Syz <- sum(Wyz)
+  
+  S <- matrix(c(Sxx,Sxy,Sxz,Sxy,Syy,Syz,Sxz,Syz,Szz), nrow = 3)
+  
+  Cx <- sum(Start[,1, drop = FALSE] * Wxx + Start[,2, drop = FALSE] * Wxy + Start[,3, drop = FALSE] * Wxz)
+  Cy <- sum(Start[,1, drop = FALSE] * Wxy + Start[,2, drop = FALSE] * Wyy + Start[,3, drop = FALSE] * Wyz)
+  Cz <- sum(Start[,1, drop = FALSE] * Wxz + Start[,2, drop = FALSE] * Wyz + Start[,3, drop = FALSE] * Wzz)
+  
+  C <- matrix(c(Cx,Cy,Cz))
+  M <- t(solve(S,C))
+  
+  return(list(X = M[1], Y = M[2], Z = M[3], N = nrow(Start)))
 }
