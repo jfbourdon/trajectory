@@ -19,7 +19,7 @@
 #' @author Jean-Francois Bourdon
 
 ### Evaluate sensor positions from LiDAR points. Points must all have the same PointSourceID.
-sensor_positions <- function(las, bin = 0.001, min_length = 2, nbpairs = 20)
+sensor_positions <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
 {
   if (!"PointSourceID" %in% names(las@data))
     stop("No 'PointSourceID' attribute found", call. = FALSE)
@@ -34,7 +34,7 @@ sensor_positions <- function(las, bin = 0.001, min_length = 2, nbpairs = 20)
   
   ## Generate a list of the ends (line numbers) of each bin
   t     <- las@data[["gpstime"]]
-  bins  <- findInterval(t, seq(min(t), max(t), 1))
+  bins  <- findInterval(t, seq(min(t), max(t), bin))
   rle_t <- rle(bins)
   end   <- cumsum(rle_t$lengths)
   start <- c(1, end[-length(end)] + 1)

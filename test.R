@@ -1,4 +1,5 @@
 library(lidR)
+library(magrittr)
 
 ctg = catalog("~/Documents/ALS data/Montmorency dataset/las/")
 ctg = ctg[c(380,381,382,406,407, 408, 432, 433, 434, 459,460),]
@@ -9,13 +10,12 @@ source("trajectory.R")
 las = readLAS(ctg$filename, select = "xyzrtp", filter = "-keep_point_source 8 -drop_single")
 plot(las)
 
-output = sensor_positions(las, bin = 0.001)
+output = sensor_positions(las, bin = 0.5)
 Z <- output@coords[,3]
 output@coords = output@coords[,-3]
 output$Z <- Z
 
-x = plot(las)
-add_treetops3d(x, output, radius = 10)
+plot(las) %>% add_treetops3d(output, radius = 10)
 
 report = profvis::profvis({fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20)})
 
