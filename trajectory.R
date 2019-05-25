@@ -27,20 +27,15 @@ sensor_tracking <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
 
 sensor_tracking.LAS <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
 {
-  if (!"PointSourceID" %in% names(las@data))
-    stop("No 'PointSourceID' attribute found", call. = FALSE)
-  
-  if (!"gpstime" %in% names(las@data))
-    stop("No 'gpstime' attribute found", call. = FALSE)
-  
-  if (!"ReturnNumber" %in% names(las@data))
-    stop("No 'ReturnNumber' attribute found", call. = FALSE)
-  
-  if (!"NumberOfReturns" %in% names(las@data))
-    stop("No 'NumberOfReturns' attribute found", call. = FALSE)
-  
-  if (!is.numeric(min_length) || min_length < 0)
-    stop("Invalid min_length argument. Must be a positive numeric")
+  if (!"PointSourceID" %in% names(las@data))     stop("No 'PointSourceID' attribute found", call. = FALSE)
+  if (!"gpstime" %in% names(las@data))           stop("No 'gpstime' attribute found", call. = FALSE)
+  if (!"ReturnNumber" %in% names(las@data))      stop("No 'ReturnNumber' attribute found", call. = FALSE)
+  if (!"NumberOfReturns" %in% names(las@data))   stop("No 'NumberOfReturns' attribute found", call. = FALSE)
+  if (!is.numeric(min_length) || min_length < 0) stop("Invalid min_length argument. Must be a positive numeric", call. = FALSE)
+  if (all(las@data[["gpstime"]] == 0))           stop("'gpstime' attribute is not populated.", call. = FALSE)
+  if (all(las@data[["ReturnNumber"]] == 0))      stop("'ReturnNumber' attribute is not populated.", call. = FALSE)
+  if (all(las@data[["NumberOfReturns"]] == 0))   stop("'NumberOfReturns' attribute is not populated.", call. = FALSE)
+  if (all(las@data[["PointSourceID"]] == 0))     stop("'PointSourceID' attribute is not populated.", call. = FALSE)
 
   data <- las@data
   
@@ -53,8 +48,17 @@ sensor_tracking.LAS <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
   
   # Filter some edge points that may not be paired
   count <- lidR:::fast_table(data$pulseID,  max(data$pulseID))
-  ii    <- which(count == 1)
+  ii    <- which(count == 1L)
   data  <- data[!pulseID %in% ii]
+  
+  # Check for possible invalid points in dataset
+  test = data[, list(error = PointSourceID[1] != PointSourceID[2]), by = .(pulseID)]
+  if (any(test$error))
+  {
+    ii <- test$pulseID[test$error]
+    data  <- data[!pulseID %in% ii]
+    warning(glue::glue("{length(ii)} pulses (points with same gpstime) come from different flightlines. The point cloud is likely to be wrongly populated. These points were removed"), call. = FALSE)
+  }
   
   # Generate the bins
   bins <- lidR:::round_any(data$gpstime, bin)
