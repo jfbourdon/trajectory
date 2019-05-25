@@ -19,7 +19,13 @@
 #' @author Jean-Francois Bourdon
 
 ### Evaluate sensor positions from LiDAR points. Points must all have the same PointSourceID.
+
 sensor_tracking <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
+{
+  UseMethod("sensor_tracking", las)
+}
+
+sensor_tracking.LAS <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
 {
   if (!"PointSourceID" %in% names(las@data))
     stop("No 'PointSourceID' attribute found", call. = FALSE)
@@ -54,10 +60,42 @@ sensor_tracking <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
   bins <- lidR:::round_any(data$gpstime, bin)
   
   # Find the position P of the sensor in each bin
-  P <- data[, if(.N > 2*nbpairs) sensor_positions(X,Y,Z, ReturnNumber, min_length), by = .(bins, PointSourceID)]
+  P <- data[, if (.N > 2*nbpairs) sensor_positions(X,Y,Z, ReturnNumber, min_length), by = .(bins, PointSourceID)]
+  P <- P[!is.na(X)]
   P <- sp::SpatialPointsDataFrame(P[,3:5], P[,c(1,2,6)])
   
   return(P)
+}
+
+sensor_tracking.LAScluster <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
+{
+  x <- readLAS(las)
+  if (is.empty(x)) return(NULL)
+  pos  <- sensor_tracking(x, bin, min_length, nbpairs)
+  bbox <- raster::extent(las)
+  pos  <- raster::crop(pos, bbox)
+  return(pos)
+}
+
+sensor_tracking.LAScatalog <- function(las, bin = 0.5, min_length = 2, nbpairs = 500)
+{
+  opt_select(las) <- "xyzrntp"
+  opt_filter(las) <- "-drop_single"
+  
+  options <- list(need_buffer = TRUE, drop_null = TRUE, need_output_file = FALSE)
+  output  <- catalog_apply(las, sensor_tracking, bin = bin, min_length = min_length, nbpairs = nbpairs, .options = options)
+  
+  if (opt_output_files(las) == "")
+  {
+    output <- do.call(rbind, output)
+    output@proj4string <- las@proj4string
+  }
+  else
+  {
+    output <- unlist(output)
+  }
+  
+  return(output)
 }
 
 ### Estimate for a specific bin the sensor position
@@ -65,8 +103,15 @@ sensor_positions <- function(x, y, z, rn, min_length, weights = NULL)
 {
   first <- rn == 1
   last  <- rn > 1
+  
   Start <- matrix(c(x[first], y[first], z[first]), ncol = 3L)
   End   <- matrix(c(x[last], y[last], z[last]), ncol = 3L)
+  
+  if (nrow(Start) != nrow(End))
+  {
+    warning("Something went wrong. The point cloud is likely to be wrongly populated.", call. = FALSE)
+    return(list(X = NA_real_, Y = NA_real_, Z = NA_real_, N = NA_integer_))
+  }
   
   # Start:  matrix n x 3 containing XYZ coordinates for each starting returns
   # End:    matrix n x 3 containing XYZ coordinates for each ending returns
