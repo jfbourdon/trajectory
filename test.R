@@ -1,29 +1,84 @@
 library(lidR)
 library(magrittr)
 
-ctg = catalog("~/Documents/ALS data/Montmorency dataset/las/")
-ctg = ctg[c(380,381,382,406,407, 408, 432, 433, 434, 459,460),]
+source("sensor_tracking.R")
+source("lasrangecorrection.R")
+
+
+#ctg = catalog("~/Documents/ALS data/Montmorency dataset/las/")
+#ctg = ctg[c(380,381,382,406,407, 408, 432, 433, 434, 459,460),]
+#plot(ctg)
+
+ctg = catalog("~/Documents/ALS data/BCTS/")
+ctg = ctg[c(14,16,25,26),]
+plot(ctg, chunk = TRUE)
+
+# Test on a point cloud
+
+las <- readLAS(ctg$filename[4], filter = "-drop_single -thin_pulses_with_time 0.0001")
+flightlines = sensor_tracking(las, interval = 0.25, pmin = 200, extra_check = FALSE)
+plot(extent(las))
+plot(flightlines, add = TRUE)
+
+las <- readLAS(ctg$filename[4], select = "ti")
+
+las <- lasrangecorrection(las, flightlines, Rs = 800)
+M   <- grid_metrics(las, list(Imax = max(RawIntensity), cImax = max(Intensity)), 5)
+
+I = M[[1]]
+cI = M[[2]]
+
+plot(I, col = heat.colors(50))
+plot(cI, col = heat.colors(50))
+
+I[I > 170] <- NA
+cI[cI > 100] <- NA
+
+plot(I, col = heat.colors(50))
+plot(cI, col = heat.colors(50))
+
+# Apply on a catalog
+
+opt_filter(ctg) <- "-drop_single -thin_pulses_with_time 0.0001"
+
+flightlines = sensor_tracking(ctg, interval = 0.25, pmin = 200, extra_check = FALSE)
+shapefile(flightlines, filename = "~/Téléchargements/flightlines.shp")
+
+flightlines <- shapefile("~/Téléchargements/flightlines.shp")
+
 plot(ctg)
+plot(flightlines, add = TRUE)
 
-source("trajectory.R")
+#plot(las) %>% add_treetops3d(flightline, radius = 10)
 
-las = readLAS(ctg$filename, select = "xyzrntp", filter = "-keep_point_source 8 -drop_single")
-plot(las)
+corrected_metrics = function(chunk, flightlines)
+{
+  las = readLAS(chunk)
+  if (is.empty(las)) return(NULL)
 
-output = sensor_tracking(las, bin = 0.5)
-Z <- output@coords[,3]
-output@coords = output@coords[,-3]
-output$Z <- Z
+  las <- lasrangecorrection(las, flightlines, Rs = 800)
+  M   <- grid_metrics(las, list(Imax = max(RawIntensity), cImax = max(Intensity)), 5)
+  M   <- raster::crop(M, raster::extent(chunk))
+  return(M)
+}
 
-plot(las) %>% add_treetops3d(output, radius = 10)
+opt_filter(ctg) <- ""
+opt_chunk_size(ctg) <- 800
+opt_chunk_buffer(ctg) <- 1
+opt_select(ctg) <- "ti"
+options <- list(raster_alignment = 5)
+M <- catalog_apply(ctg, corrected_metrics, flightlines = flightlines, .options = options)
+M <- lidR:::merge_rasters(M)
 
-report = profvis::profvis({fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20)})
+I = M[[1]]
+cI = M[[2]]
 
-microbenchmark::microbenchmark(fn_trajectory(las@data, PtSourceID = NULL, bin = 0.001, step = 2, nbpairs = 20), times = 5)
+plot(I)
+plot(cI)
 
-# v0.1 : time ~  18 s | memory used ~ 3.4 GB
-# v0.2 : time ~   6 s | memory used ~ 1.3 GB
-# v0.3 : time ~ 1.5 s | memory used ~ 1.1 GB
-# v0.4 : time ~   1 s | memory used ~ 1.0 GB
-# v0.5 : time ~ 0.5 s | memory used ~ 150 MB
-# v0.6 : time ~ 0.4 s | memory used ~ 150 MB
+I[I > 200] <- NA
+cI[cI > 300] <- 300
+
+plot(I, col = heat.colors(50))
+plot(cI, col = heat.colors(50))
+
