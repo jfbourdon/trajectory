@@ -1,6 +1,9 @@
 lasrangecorrection = function(las, flightlines, Rs = 1000)
 {
-  fl <- as.data.frame(flightlines)
+  coords <- flightlines@coords
+  coord  <- data.table::data.table(coords)
+  data   <- data.table::copy(flightlines@data)
+  fl     <- cbind(data, coords)
   data.table::setDT(fl)
   data.table::setorder(fl, gpstime)
   data.table::setkey(fl, gpstime)

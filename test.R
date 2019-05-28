@@ -32,17 +32,17 @@ plot(I, col = heat.colors(50))
 plot(cI, col = heat.colors(50))
 
 I[I > 170] <- NA
-cI[cI > 100] <- NA
+cI[cI > 200] <- NA
 
 plot(I, col = heat.colors(50))
 plot(cI, col = heat.colors(50))
 
 # Apply on a catalog
 
-opt_filter(ctg) <- "-drop_single -thin_pulses_with_time 0.0001"
+opt_filter(ctg) <- "-thin_pulses_with_time 0.0001"
 
 flightlines = sensor_tracking(ctg, interval = 0.25, pmin = 200, extra_check = FALSE)
-shapefile(flightlines, filename = "~/Téléchargements/flightlines.shp")
+shapefile(flightlines, filename = "~/Téléchargements/flightlines.shp", overwrite = TRUE)
 
 flightlines <- shapefile("~/Téléchargements/flightlines.shp")
 
