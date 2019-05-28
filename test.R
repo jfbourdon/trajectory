@@ -40,6 +40,8 @@ plot(cI, col = heat.colors(50))
 # Apply on a catalog
 
 opt_filter(ctg) <- "-thin_pulses_with_time 0.0001"
+opt_chunk_size(ctg) <- 0
+opt_chunk_buffer(ctg) <- 200
 
 flightlines = sensor_tracking(ctg, interval = 0.25, pmin = 200, extra_check = FALSE)
 shapefile(flightlines, filename = "~/Téléchargements/flightlines.shp", overwrite = TRUE)
@@ -76,8 +78,8 @@ cI = M[[2]]
 plot(I)
 plot(cI)
 
-I[I > 200] <- NA
-cI[cI > 300] <- 300
+I[I > 175] <- 175
+cI[cI > 120] <- 120
 
 plot(I, col = heat.colors(50))
 plot(cI, col = heat.colors(50))
