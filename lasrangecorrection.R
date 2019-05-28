@@ -1,4 +1,4 @@
-lasrangecorrection = function(las, flightlines, Rs = 1000)
+lasrangecorrection = function(las, flightlines, Rs = 1000, f = 2)
 {
   coords <- flightlines@coords
   coord  <- data.table::data.table(coords)
@@ -9,9 +9,8 @@ lasrangecorrection = function(las, flightlines, Rs = 1000)
   data.table::setkey(fl, gpstime)
   
   ids <- fl[J(las$gpstime), roll = "nearest", which = TRUE]
-  R   <- (las$X - fl$X[ids])^2 + (las$Y - fl$Y[ids])^2 + (las$Z - fl$Z[ids])^2
-  Rs  <- Rs^2
+  R   <- sqrt((las$X - fl$X[ids])^2 + (las$Y - fl$Y[ids])^2 + (las$Z - fl$Z[ids])^2)
   las@data$RawIntensity <- las@data$Intensity
-  las@data$Intensity <- las@data$Intensity * R/Rs
+  las@data$Intensity <- las@data$Intensity * (R/Rs)^f
   return(las)
 }
