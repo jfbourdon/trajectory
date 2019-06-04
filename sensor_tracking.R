@@ -24,7 +24,7 @@
 #' \item *A pulse (two or more points that share the same gpstime) is made of points from different 
 #' flightlines (different PointSourceID). This is impossible and denote wrongly populated PointSourceID
 #' attribute.
-#' }#' 
+#' }
 #' 
 #' @template param-las
 #' @param interval numeric. Tight interval used to bin the gps times and group the pulses. 
@@ -35,9 +35,9 @@
 #' Time consuming checks of data integrity are performed. These checks can be skipped as they account 
 #' for most of the computation time. See also section 'Tests of data integrity'
 #' 
-#' @return A SpatialPointDataFrame with the Z elevation stored in the table of attribute and the 
-#' information about the the time interval and the number of pulses used to find the points in the 
-#' table of attributes.
+#' @return A SpatialPointDataFrame with the Z elevation stored in the table of attribute. Informations 
+#' about the time interval and the number of pulses used to find the points are also in the table of 
+#' attributes.
 #' 
 #' @author Jean-Francois Bourdon & Jean-Romain Roussel
 sensor_tracking <- function(las, interval = 0.5, pmin = 200, extra_check = TRUE)

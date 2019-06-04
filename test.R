@@ -40,7 +40,7 @@ plot(cI, col = heat.colors(50))
 # Apply on a catalog
 
 opt_filter(ctg) <- "-thin_pulses_with_time 0.0001"
-opt_chunk_size(ctg) <- 0
+opt_chunk_size(ctg) <- 2000
 opt_chunk_buffer(ctg) <- 200
 
 flightlines = sensor_tracking(ctg, interval = 0.25, pmin = 200, extra_check = FALSE)
