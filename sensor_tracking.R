@@ -107,8 +107,8 @@ sensor_tracking.LAScluster <- function(las, interval = 0.5, pmin = 200, extra_ch
   x <- readLAS(las)
   if (is.empty(x)) return(NULL)
   pos  <- sensor_tracking(x, interval, pmin, extra_check)
-  bbox <- raster::extent(las)
-  pos  <- raster::crop(pos, bbox)
+  #bbox <- raster::extent(las)
+  #pos  <- raster::crop(pos, bbox)
   return(pos)
 }
 
@@ -119,18 +119,13 @@ sensor_tracking.LAScatalog <- function(las, interval = 0.5, pmin = 200, extra_ch
   
   options <- list(need_buffer = TRUE, drop_null = TRUE, need_output_file = FALSE)
   output  <- catalog_apply(las, sensor_tracking, interval = interval, pmin = pmin, extra_check = extra_check, .options = options)
+  output  <- do.call(rbind, output)
+  output@proj4string <- las@proj4string
   
-  if (opt_output_files(las) == "")
-  {
-    output <- do.call(rbind, output)
-    output@proj4string <- las@proj4string
-  }
-  else
-  {
-    output <- unlist(output)
-  }
-  
-  return(output)
+  data <- as.data.frame(output)
+  data.table::setDT(data)
+  i <- data[, .I[which.max(npulses)], by = gpstime]$V1
+  return(output[i,])
 }
 
 # Translated and adapted from MATLAB (Anders Eikenes, 2012)
