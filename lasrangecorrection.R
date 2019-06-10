@@ -40,8 +40,8 @@ lasrangecorrection = function(las, flightlines, Rs = 1000, f = 2)
   
   R <- find_range(las@data, fl) 
 
-  las@data$RawIntensity <- las@data$Intensity
-  las@data$Intensity    <- as.integer(las@data$Intensity * (R/Rs)^f)
+  las@data[["RawIntensity"]] <- las@data[["Intensity"]]
+  las@data[["Intensity"]]    <- as.integer(las@data[["Intensity"]] * (R/Rs)^f)
   
   #rlas::is_valid_Intensity(las@data, "warning")
   
