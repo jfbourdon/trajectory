@@ -38,6 +38,14 @@ lasrangecorrection = function(las, flightlines, Rs = 1000, f = 2)
   data.table::setDT(fl)
   data.table::setorder(fl, gpstime)
   
+  dup <- duplicated(fl, by = "gpstime")
+  
+  if (sum(dup) > 0)
+  {
+    warning("Duplicated gpstime found. Duplicated sensor position were removed.", call. = FALSE)
+    fl <- fl[!dup]
+  }
+  
   R <- find_range(las@data, fl) 
 
   las@data[["RawIntensity"]] <- las@data[["Intensity"]]

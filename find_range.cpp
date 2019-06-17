@@ -39,7 +39,17 @@ NumericVector find_range(DataFrame data, DataFrame flightlines)
       dz = Z[i] - (z[j] + (z[j+1] - z[j])*r);
     }
     
-    //Rcout << "\nj = " << j << "\nt  = " << T[i] << "\nt  = [" << t[j] << " " << t[j+1] << "]\ndx = " << dx << "\ndy = " << dy << "\ndz = " << dz << "\nR  = " << std::sqrt(dx*dx + dy*dy + dz*dz)<<  std::endl;
+    /*Rcout << std::setprecision(10) << 
+      "\nj = " << j << 
+      "\nt = " << T[i+1] << 
+      "\nx = [" << x[j] << " " << x[j+1] << "]" <<
+      "\ny = [" << y[j] << " " << y[j+1] << "]" <<
+      "\nz = [" << z[j] << " " << z[j+1] << "]" <<
+      "\nt = [" << t[j] << " " << t[j+1] << "]" <<
+      "\ndx = " << dx << 
+      "\ndy = " << dy << 
+      "\ndz = " << dz << 
+      "\nR  = " << std::sqrt(dx*dx + dy*dy + dz*dz)<<  std::endl;*/
     
     R[i] = std::sqrt(dx*dx + dy*dy + dz*dz);
   }
